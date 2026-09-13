@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark_obsidian">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SoundSphere Host — Music & Metadata Server</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="host-root">
+    <!-- Top Navigation Bar -->
+    <header class="host-header">
+      <div class="brand-group">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">SoundSphere <span class="brand-badge">Host</span></span>
+          <span class="brand-sub">Dedicated Music & Metadata Server</span>
+        </div>
+      </div>
+
+      <div class="header-status-group">
+        <div class="status-pill active" id="serverStatusBadge">
+          <span class="status-dot"></span>
+          <span id="serverStatusText">Online</span>
+        </div>
+        <button id="btnTriggerScan" class="btn btn-primary btn-sm">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+          <span>Mediathek scannen</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Dashboard Container -->
+    <main class="host-main">
+      
+      <!-- Connection Hero Banner -->
+      <section class="connection-banner">
+        <div class="conn-info">
+          <div class="conn-icon">🔗</div>
+          <div>
+            <h3 class="conn-title">Mit SoundSphere Suite verbinden</h3>
+            <p class="conn-desc">Trage diese Server-Adresse in den Einstellungen deines <strong>SoundSphere Players</strong> ein:</p>
+            <div class="conn-box">
+              <code id="connectionUrlText">http://localhost:8765</code>
+              <button id="btnCopyUrl" class="btn-copy" title="URL kopieren">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Kopieren</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="conn-stats-mini">
+          <div class="stat-mini-item">
+            <span class="stat-mini-val" id="statTracksCount">0</span>
+            <span class="stat-mini-lbl">Songs</span>
+          </div>
+          <div class="stat-mini-item">
+            <span class="stat-mini-val" id="statSyncedRate">0%</span>
+            <span class="stat-mini-lbl">Synced Lyrics</span>
+          </div>
+          <div class="stat-mini-item">
+            <span class="stat-mini-val" id="statArtistsCount">0</span>
+            <span class="stat-mini-lbl">Künstler</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scan Progress Overlay/Card (Visible when scanning) -->
+      <section class="scan-card hidden" id="scanCard">
+        <div class="scan-header">
+          <div class="scan-title-group">
+            <div class="spinner"></div>
+            <div>
+              <strong id="scanPhaseText">Scanne Mediathek...</strong>
+              <div id="scanCurrentTrackText" class="scan-subtitle">Vorbereitung...</div>
+            </div>
+          </div>
+          <span class="scan-counter" id="scanCounterText">0 / 0</span>
+        </div>
+        <div class="scan-progress-bar">
+          <div class="scan-progress-fill" id="scanProgressFill" style="width: 0%;"></div>
+        </div>
+      </section>
+
+      <!-- Dashboard Grid: Settings & Library Explorer -->
+      <div class="dashboard-grid">
+        
+        <!-- Left: Host & Scraper Configuration -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <div class="card-header-icon">⚙️</div>
+            <div>
+              <h2 class="card-title">Server & Metadaten-Konfiguration</h2>
+              <p class="card-desc">Passe Verzeichnisse und Prioritäten für lokale Tags vs. Online-Scraper an</p>
+            </div>
+          </div>
+
+          <form id="hostConfigForm" class="config-form">
+            <!-- Music Directory -->
+            <div class="form-group">
+              <label class="form-label">
+                <span>📁 Musik-Verzeichnis (Host / Container)</span>
+              </label>
+              <div class="input-with-button">
+                <input type="text" id="cfgMusicDir" class="form-input" placeholder="/music oder D:\Musik" required>
+                <button type="button" id="btnBrowseDir" class="btn btn-secondary btn-sm">Durchsuchen</button>
+              </div>
+              <span class="form-help">Im Docker-Container standardmäßig <code>/music</code> (über Docker Volumes gemountet).</span>
+            </div>
+
+            <!-- Priority Settings -->
+            <div class="form-section-title">Metadaten & Lyrics Priorität</div>
+            
+            <div class="toggle-group">
+              <label class="switch-row">
+                <div class="switch-info">
+                  <strong>Lokale Metadaten bevorzugen</strong>
+                  <span>Eingebettete ID3/Vorbis/FLAC-Tags & Dateinamen primär verwenden</span>
+                </div>
+                <input type="checkbox" id="cfgPreferLocalMeta" class="switch-input" checked>
+                <span class="switch-slider"></span>
+              </label>
+
+              <label class="switch-row">
+                <div class="switch-info">
+                  <strong>Lokale Lyrics bevorzugen</strong>
+                  <span>Lokale .lrc / .txt Dateien und eingebettete Lyrics stets zuerst nutzen</span>
+                </div>
+                <input type="checkbox" id="cfgPreferLocalLyrics" class="switch-input" checked>
+                <span class="switch-slider"></span>
+              </label>
+
+              <label class="switch-row">
+                <div class="switch-info">
+                  <strong>Fehlende Daten online abrufen</strong>
+                  <span>Fehlende Songtexte (LRCLIB) oder Alben (MusicBrainz) automatisch ergänzen</span>
+                </div>
+                <input type="checkbox" id="cfgFetchMissingOnline" class="switch-input" checked>
+                <span class="switch-slider"></span>
+              </label>
+
+              <label class="switch-row">
+                <div class="switch-info">
+                  <strong>Online Lyrics lokal als .lrc speichern</strong>
+                  <span>Aus dem Netz geladene Songtexte dauerhaft im Musikordner sichern</span>
+                </div>
+                <input type="checkbox" id="cfgSaveFetchedLrc" class="switch-input" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+
+            <!-- Enabled Sources Checklist -->
+            <div class="form-section-title">Aktive Metadaten-Quellen</div>
+            
+            <div class="sources-grid">
+              <label class="checkbox-chip">
+                <input type="checkbox" id="srcId3" checked>
+                <span>🏷️ Embedded ID3 / Tags</span>
+              </label>
+              <label class="checkbox-chip">
+                <input type="checkbox" id="srcLocalLrc" checked>
+                <span>📝 Lokale .lrc / .txt</span>
+              </label>
+              <label class="checkbox-chip">
+                <input type="checkbox" id="srcLocalCovers" checked>
+                <span>🖼️ Lokale cover.jpg / folder.jpg</span>
+              </label>
+              <label class="checkbox-chip">
+                <input type="checkbox" id="srcLrclib" checked>
+                <span>⚡ LRCLIB (Synced Lyrics)</span>
+              </label>
+              <label class="checkbox-chip">
+                <input type="checkbox" id="srcMusicBrainz" checked>
+                <span>🧠 MusicBrainz (Releases)</span>
+              </label>
+              <label class="checkbox-chip">
+                <input type="checkbox" id="srcGenius">
+                <span>🎤 Genius (Web Scrape)</span>
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" id="btnSaveConfig">
+                <span>Einstellungen speichern</span>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Right: Server Stats & Quick Explorer -->
+        <div class="card library-card">
+          <div class="card-header">
+            <div class="card-header-icon">📚</div>
+            <div>
+              <h2 class="card-title">Mediathek Explorer</h2>
+              <p class="card-desc" id="libSubtitle">Indizierte Songs auf diesem Host</p>
+            </div>
+          </div>
+
+          <div class="library-search-bar">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" id="libSearchInput" placeholder="Titel, Künstler oder Album suchen...">
+          </div>
+
+          <div class="library-table-container">
+            <table class="lib-table">
+              <thead>
+                <tr>
+                  <th style="width: 40px;">#</th>
+                  <th>Titel</th>
+                  <th>Künstler</th>
+                  <th>Album</th>
+                  <th style="text-align:center;">Lyrics</th>
+                  <th style="text-align:right;">Dauer</th>
+                </tr>
+              </thead>
+              <tbody id="libTableBody">
+                <tr>
+                  <td colspan="6" style="text-align:center; padding: 40px; color:var(--text-muted);">
+                    Lade Mediathek...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Mini Audio Player Preview -->
+          <div class="host-preview-player hidden" id="previewPlayer">
+            <div class="preview-info">
+              <strong id="previewTitle">Titel</strong>
+              <span id="previewArtist">Künstler</span>
+            </div>
+            <audio id="previewAudioEl" controls></audio>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+    <!-- Browse Directory Modal -->
+    <div class="modal hidden" id="browseModal">
+      <div class="modal-backdrop" id="browseModalBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 class="modal-title">Ordner auswählen</h3>
+          <button class="btn-close" id="btnCloseBrowseModal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="current-browse-path" id="browseCurrentPath">/music</div>
+          <div class="browse-dir-list" id="browseDirList">
+            <!-- Dynamic folders -->
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btnCancelBrowse">Abbrechen</button>
+          <button class="btn btn-primary" id="btnSelectCurrentBrowse">Diesen Ordner wählen</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
