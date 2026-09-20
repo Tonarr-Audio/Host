@@ -9,7 +9,8 @@ if os.path.exists("/data"):
     DATA_DIR = Path("/data")
 else:
     DATA_DIR = Path.home() / ".soundsphere_host"
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = DATA_DIR / "host_config.json"
 CACHE_FILE = DATA_DIR / "host_library_cache.json"
@@ -56,7 +57,11 @@ def load_host_config() -> HostConfig:
         except Exception as e:
             print(f"[HostConfig] Error loading {CONFIG_FILE}: {e}")
             return HostConfig()
-    return HostConfig()
+    
+    # First start: save default config so files appear in data dir
+    cfg = HostConfig()
+    save_host_config(cfg)
+    return cfg
 
 def save_host_config(config: HostConfig) -> None:
     try:

@@ -4,8 +4,12 @@ import time
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
-from .config import load_host_config, HostConfig, CACHE_FILE, DATA_DIR
-from .metadata import metadata_engine
+try:
+    from .config import load_host_config, HostConfig, CACHE_FILE, DATA_DIR
+    from .metadata import metadata_engine
+except (ImportError, ValueError):
+    from config import load_host_config, HostConfig, CACHE_FILE, DATA_DIR
+    from metadata import metadata_engine
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".alac", ".aiff", ".wma"}
 

@@ -12,9 +12,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
-from .config import load_host_config, save_host_config, HostConfig, DATA_DIR
-from .scanner import library_cache, scan_directory_streaming
-from .metadata import metadata_engine
+try:
+    from .config import load_host_config, save_host_config, HostConfig, DATA_DIR
+    from .scanner import library_cache, scan_directory_streaming
+    from .metadata import metadata_engine
+except (ImportError, ValueError):
+    from config import load_host_config, save_host_config, HostConfig, DATA_DIR
+    from scanner import library_cache, scan_directory_streaming
+    from metadata import metadata_engine
 
 HOST_VERSION = "1.0.0"
 START_TIME = time.time()
@@ -24,6 +29,11 @@ app = FastAPI(
     version=HOST_VERSION,
     description="Dedicated High-Performance Music & Metadata Server for the SoundSphere Suite"
 )
+
+@app.on_event("startup")
+async def on_startup():
+    config = load_host_config()
+    print(f"[SoundSphere Host] v{HOST_VERSION} started. Data directory: {DATA_DIR}. Music directory: {config.music_directory}")
 
 app.add_middleware(
     CORSMiddleware,

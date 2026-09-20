@@ -14,7 +14,10 @@ from mutagen.oggopus import OggOpus
 from mutagen.wave import WAVE
 import httpx
 
-from .config import HostConfig
+try:
+    from .config import HostConfig
+except (ImportError, ValueError):
+    from config import HostConfig
 
 COVER_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"]
 COVER_FILENAMES = ["cover", "folder", "front", "album", "artwork", "default"]
