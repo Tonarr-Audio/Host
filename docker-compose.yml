@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  soundsphere-host:
+    image: ghcr.io/tonarr-audio/host:latest
+    container_name: soundsphere-host
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      # Map your music directory here
+      - /DATA/Media/Music:/music:ro
+      # Persistent configuration and cache directory
+      - ./data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HOST_PORT=8765
+      - HOST_BIND=0.0.0.0
+      - HOST_DATA_DIR=/data
