@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from fastapi import FastAPI, HTTPException, Query, Request, Response, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 try:
@@ -175,10 +175,57 @@ async def get_tracks_list(
     artist: Optional[str] = Query(None),
     album: Optional[str] = Query(None),
     limit: Optional[int] = Query(None),
+    offset: int = Query(0),
+    client: Optional[str] = Query(None),
+    include_creator_only: bool = Query(False)
+):
+    config = load_host_config()
+    tracks = library_cache.tracks
+
+    # If folder is used only as source for LRCCreator & MediaManager,
+    # exclude local folder tracks from Player requests
+    if config.folder_source_for_creator_and_manager_only:
+        is_creator_or_manager = (client or "").lower().strip() in ("creator", "lrccreator", "mediamanager", "manager") or include_creator_only
+        if not is_creator_or_manager:
+            tracks = [t for t in tracks if t.get("source") == "plex"]
+
+    if artist:
+        art_clean = artist.lower().strip()
+        tracks = [t for t in tracks if (t.get("artist") or "").lower().strip() == art_clean]
+        
+    if album:
+        alb_clean = album.lower().strip()
+        tracks = [t for t in tracks if (t.get("album") or "").lower().strip() == alb_clean]
+
+    if q:
+        tokens = q.lower().strip().split()
+        def match(t):
+            txt = f"{t.get('title','')} {t.get('artist','')} {t.get('album','')} {t.get('genre','')}".lower()
+            return all(tok in txt for tok in tokens)
+        tracks = [t for t in tracks if match(t)]
+
+    total = len(tracks)
+    if limit:
+        tracks = tracks[offset:offset+limit]
+
+    return {
+        "total": total,
+        "count": len(tracks),
+        "offset": offset,
+        "tracks": tracks
+    }
+
+@app.get("/api/creator/tracks")
+async def get_creator_tracks(
+    q: Optional[str] = Query(None),
+    artist: Optional[str] = Query(None),
+    album: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
     offset: int = Query(0)
 ):
-    tracks = library_cache.tracks
-    
+    """Returns local folder tracks exclusively for LRCCreator and MediaManager."""
+    tracks = [t for t in library_cache.tracks if t.get("source") != "plex" or (t.get("file_path") and not str(t.get("file_path")).startswith("plex://"))]
+
     if artist:
         art_clean = artist.lower().strip()
         tracks = [t for t in tracks if (t.get("artist") or "").lower().strip() == art_clean]
@@ -228,17 +275,21 @@ async def stream_audio(
     if query_id:
         clean_id = str(query_id).replace("host://", "").strip()
         track = library_cache.get_track(clean_id) or library_cache.get_track(query_id)
-        if track and track.get("file_path") and os.path.exists(track.get("file_path")):
-            target_path = track.get("file_path")
+        if track:
+            if track.get("stream_url") and (not track.get("file_path") or not os.path.exists(str(track.get("file_path")))):
+                return RedirectResponse(track["stream_url"])
+            if track.get("file_path") and os.path.exists(track.get("file_path")):
+                target_path = track.get("file_path")
 
     if not target_path and path:
         clean_p = path.replace("host://", "").strip()
+        track = library_cache.get_track(clean_p)
+        if track and track.get("stream_url") and (not track.get("file_path") or not os.path.exists(str(track.get("file_path")))):
+            return RedirectResponse(track["stream_url"])
         if os.path.exists(clean_p):
             target_path = clean_p
-        else:
-            track = library_cache.get_track(clean_p)
-            if track and track.get("file_path") and os.path.exists(track.get("file_path")):
-                target_path = track.get("file_path")
+        elif track and track.get("file_path") and os.path.exists(track.get("file_path")):
+            target_path = track.get("file_path")
 
     if not target_path or not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="Audiodatei nicht gefunden.")
@@ -530,6 +581,12 @@ async def sync_plex_endpoint():
                     lt["track_number"] = match.get("track_number")
                 updated_count += 1
                 
+        # Ensure all Plex tracks are available in the Host library
+        existing_plex_ids = {t.get("id") for t in library_cache.tracks if t.get("source") == "plex"}
+        new_plex_tracks = [pt for pt in tracks if pt.get("id") not in existing_plex_ids]
+        if new_plex_tracks:
+            library_cache.tracks.extend(new_plex_tracks)
+
         library_cache.save()
         library_cache._rebuild_map()
 

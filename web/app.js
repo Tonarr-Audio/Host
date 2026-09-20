@@ -31,6 +31,7 @@ const elements = {
   hostConfigForm: $('hostConfigForm'),
   cfgMusicDir: $('cfgMusicDir'),
   btnBrowseDir: $('btnBrowseDir'),
+  cfgFolderForCreatorOnly: $('cfgFolderForCreatorOnly'),
   cfgPreferLocalMeta: $('cfgPreferLocalMeta'),
   cfgPreferLocalLyrics: $('cfgPreferLocalLyrics'),
   cfgFetchMissingOnline: $('cfgFetchMissingOnline'),
@@ -43,6 +44,25 @@ const elements = {
   srcLrclib: $('srcLrclib'),
   srcMusicBrainz: $('srcMusicBrainz'),
   srcGenius: $('srcGenius'),
+
+  // Plex Integration
+  hostPlexBadge: $('hostPlexBadge'),
+  hostPlexBadgeText: $('hostPlexBadgeText'),
+  hostPlexConnectedView: $('hostPlexConnectedView'),
+  hostPlexLoggedOutView: $('hostPlexLoggedOutView'),
+  hostPlexServerInfo: $('hostPlexServerInfo'),
+  btnHostPlexSync: $('btnHostPlexSync'),
+  btnHostPlexLogout: $('btnHostPlexLogout'),
+  btnRefreshHostPlexSections: $('btnRefreshHostPlexSections'),
+  hostPlexSectionSelect: $('hostPlexSectionSelect'),
+  cfgPreferPlexMeta: $('cfgPreferPlexMeta'),
+  btnHostPlexOAuth: $('btnHostPlexOAuth'),
+  btnToggleManualHostPlex: $('btnToggleManualHostPlex'),
+  hostPlexManualContainer: $('hostPlexManualContainer'),
+  hostPlexUrlInput: $('hostPlexUrlInput'),
+  hostPlexTokenInput: $('hostPlexTokenInput'),
+  btnSaveManualHostPlex: $('btnSaveManualHostPlex'),
+  hostPlexStatusMsg: $('hostPlexStatusMsg'),
 
   // Library Table & Search
   libSearchInput: $('libSearchInput'),
@@ -119,10 +139,12 @@ async function fetchHostConfig() {
       state.config = cfg;
 
       if (elements.cfgMusicDir) elements.cfgMusicDir.value = cfg.music_directory || '';
+      if (elements.cfgFolderForCreatorOnly) elements.cfgFolderForCreatorOnly.checked = !!cfg.folder_source_for_creator_and_manager_only;
       if (elements.cfgPreferLocalMeta) elements.cfgPreferLocalMeta.checked = !!cfg.prefer_local_metadata;
       if (elements.cfgPreferLocalLyrics) elements.cfgPreferLocalLyrics.checked = !!cfg.prefer_local_lyrics;
       if (elements.cfgFetchMissingOnline) elements.cfgFetchMissingOnline.checked = !!cfg.fetch_missing_online;
       if (elements.cfgSaveFetchedLrc) elements.cfgSaveFetchedLrc.checked = !!cfg.save_fetched_lrc_locally;
+      if (elements.cfgPreferPlexMeta) elements.cfgPreferPlexMeta.checked = cfg.prefer_plex_metadata !== false;
 
       const src = cfg.sources || {};
       if (elements.srcId3) elements.srcId3.checked = src.id3_tags !== false;
@@ -144,8 +166,10 @@ if (elements.hostConfigForm) {
     const updated = {
       ...state.config,
       music_directory: elements.cfgMusicDir.value.trim(),
+      folder_source_for_creator_and_manager_only: elements.cfgFolderForCreatorOnly ? elements.cfgFolderForCreatorOnly.checked : false,
       prefer_local_metadata: elements.cfgPreferLocalMeta.checked,
       prefer_local_lyrics: elements.cfgPreferLocalLyrics.checked,
+      prefer_plex_metadata: elements.cfgPreferPlexMeta ? elements.cfgPreferPlexMeta.checked : true,
       fetch_missing_online: elements.cfgFetchMissingOnline.checked,
       save_fetched_lrc_locally: elements.cfgSaveFetchedLrc.checked,
       sources: {
@@ -421,7 +445,259 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// 8. Plex Media Server Integration
+let plexPinPollInterval = null;
+
+async function fetchHostPlexStatus() {
+  if (!elements.hostPlexBadge) return;
+  try {
+    const res = await fetch('/api/plex/status');
+    if (res.ok) {
+      const data = await res.json();
+      const connected = !!(data.configured && data.reachable);
+      
+      if (connected) {
+        elements.hostPlexBadge.classList.remove('disconnected');
+        elements.hostPlexBadge.classList.add('connected');
+        if (elements.hostPlexBadgeText) elements.hostPlexBadgeText.textContent = 'Verbunden';
+        if (elements.hostPlexConnectedView) elements.hostPlexConnectedView.style.display = 'flex';
+        if (elements.hostPlexLoggedOutView) elements.hostPlexLoggedOutView.style.display = 'none';
+        
+        const serverName = data.server_name || data.name || 'Plex Media Server';
+        const serverVer = data.server_version || data.version || '';
+        const serverUrl = data.effective_url || data.url || '';
+        if (elements.hostPlexServerInfo) {
+          elements.hostPlexServerInfo.textContent = `Server: ${serverName} ${serverVer ? '(' + serverVer + ')' : ''} · ${serverUrl}`;
+        }
+        
+        loadHostPlexSections(data.section || (state.config && state.config.plex_section));
+      } else {
+        elements.hostPlexBadge.classList.remove('connected');
+        elements.hostPlexBadge.classList.add('disconnected');
+        if (elements.hostPlexBadgeText) elements.hostPlexBadgeText.textContent = 'Nicht verbunden';
+        if (elements.hostPlexConnectedView) elements.hostPlexConnectedView.style.display = 'none';
+        if (elements.hostPlexLoggedOutView) elements.hostPlexLoggedOutView.style.display = 'flex';
+        if (data.configured && !data.reachable) {
+          if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = '⚠️ Plex Server konfiguriert, aber nicht erreichbar.';
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Error checking host plex status:', err);
+  }
+}
+
+async function loadHostPlexSections(selectedSectionKey = null) {
+  if (!elements.hostPlexSectionSelect) return;
+  try {
+    const res = await fetch('/api/plex/sections');
+    if (res.ok) {
+      const sections = await res.json();
+      if (Array.isArray(sections) && sections.length > 0) {
+        let html = '<option value="">-- Alle Musik-Mediatheken --</option>';
+        sections.forEach(sec => {
+          const isSel = (selectedSectionKey && String(sec.key) === String(selectedSectionKey)) ? 'selected' : '';
+          html += `<option value="${escapeHtml(sec.key)}" ${isSel}>${escapeHtml(sec.title || sec.name)}</option>`;
+        });
+        elements.hostPlexSectionSelect.innerHTML = html;
+      } else {
+        elements.hostPlexSectionSelect.innerHTML = '<option value="">Keine Musik-Mediathek gefunden</option>';
+      }
+    }
+  } catch (err) {
+    console.warn('Error loading plex sections:', err);
+  }
+}
+
+if (elements.hostPlexSectionSelect) {
+  elements.hostPlexSectionSelect.addEventListener('change', async (e) => {
+    const sec = e.target.value;
+    try {
+      const res = await fetch('/api/plex/set-section', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ section: sec })
+      });
+      if (res.ok) {
+        state.config.plex_section = sec;
+        showToast('📁 Plex-Mediathek aktualisiert!');
+      }
+    } catch (err) {
+      showToast('Fehler beim Auswählen der Mediathek.');
+    }
+  });
+}
+
+if (elements.btnRefreshHostPlexSections) {
+  elements.btnRefreshHostPlexSections.addEventListener('click', () => {
+    loadHostPlexSections(state.config.plex_section);
+    showToast('🔄 Plex-Mediatheken aktualisiert');
+  });
+}
+
+// Plex Sync Button
+if (elements.btnHostPlexSync) {
+  elements.btnHostPlexSync.addEventListener('click', async () => {
+    elements.btnHostPlexSync.disabled = true;
+    elements.btnHostPlexSync.textContent = '⏳ Synchronisiere...';
+    try {
+      const res = await fetch('/api/plex/sync', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        showToast(`🎉 ${data.message || 'Plex Mediathek synchronisiert!'}`);
+        fetchHostInfo();
+        fetchTracksList();
+      } else {
+        const err = await res.json();
+        showToast(`Fehler: ${err.detail || 'Sync fehlgeschlagen'}`);
+      }
+    } catch (err) {
+      showToast('Fehler beim Synchronisieren.');
+    } finally {
+      elements.btnHostPlexSync.disabled = false;
+      elements.btnHostPlexSync.innerHTML = '<span>🔄 Songs & Playlists synchronisieren</span>';
+    }
+  });
+}
+
+// Plex Logout
+if (elements.btnHostPlexLogout) {
+  elements.btnHostPlexLogout.addEventListener('click', async () => {
+    if (!confirm('Plex wirklich vom Host trennen?')) return;
+    try {
+      const res = await fetch('/api/plex/auth/logout', { method: 'POST' });
+      if (res.ok) {
+        showToast('Plex Server getrennt.');
+        fetchHostPlexStatus();
+      }
+    } catch (err) {
+      showToast('Fehler beim Abmelden.');
+    }
+  });
+}
+
+// Toggle Manual Plex Inputs
+if (elements.btnToggleManualHostPlex) {
+  elements.btnToggleManualHostPlex.addEventListener('click', () => {
+    if (!elements.hostPlexManualContainer) return;
+    const isHidden = elements.hostPlexManualContainer.style.display === 'none';
+    elements.hostPlexManualContainer.style.display = isHidden ? 'flex' : 'none';
+    if (isHidden) {
+      if (elements.hostPlexUrlInput) elements.hostPlexUrlInput.value = (state.config && state.config.plex_url) || '';
+      if (elements.hostPlexTokenInput) elements.hostPlexTokenInput.value = (state.config && state.config.plex_token) || '';
+    }
+  });
+}
+
+// Save Manual Plex Config
+if (elements.btnSaveManualHostPlex) {
+  elements.btnSaveManualHostPlex.addEventListener('click', async () => {
+    const url = (elements.hostPlexUrlInput ? elements.hostPlexUrlInput.value : '').trim();
+    const token = (elements.hostPlexTokenInput ? elements.hostPlexTokenInput.value : '').trim();
+    if (!url || !token) {
+      showToast('Bitte URL und Token eingeben.');
+      return;
+    }
+
+    elements.btnSaveManualHostPlex.disabled = true;
+    elements.btnSaveManualHostPlex.textContent = '⏳ Prüfe...';
+
+    try {
+      const testRes = await fetch(`/api/plex/test?url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`);
+      const testData = await testRes.json();
+      if (!testData.success) {
+        showToast(`Verbindungsfehler: ${testData.error || 'Server nicht erreichbar'}`);
+        elements.btnSaveManualHostPlex.disabled = false;
+        elements.btnSaveManualHostPlex.textContent = 'Verbindung testen & speichern';
+        return;
+      }
+
+      // Save to config
+      const updated = {
+        ...state.config,
+        plex_enabled: true,
+        plex_url: url,
+        plex_token: token
+      };
+      const saveRes = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated)
+      });
+      if (saveRes.ok) {
+        state.config = updated;
+        showToast('🎉 Plex erfolgreich verbunden & gespeichert!');
+        if (elements.hostPlexManualContainer) elements.hostPlexManualContainer.style.display = 'none';
+        fetchHostPlexStatus();
+      }
+    } catch (err) {
+      showToast('Fehler beim Verbinden.');
+    } finally {
+      elements.btnSaveManualHostPlex.disabled = false;
+      elements.btnSaveManualHostPlex.textContent = 'Verbindung testen & speichern';
+    }
+  });
+}
+
+// 1-Click OAuth PIN
+if (elements.btnHostPlexOAuth) {
+  elements.btnHostPlexOAuth.addEventListener('click', async () => {
+    elements.btnHostPlexOAuth.disabled = true;
+    elements.btnHostPlexOAuth.textContent = '⏳ PIN wird erstellt...';
+    try {
+      const res = await fetch('/api/plex/auth/pin', { method: 'POST' });
+      if (res.ok) {
+        const pinData = await res.json();
+        const authUrl = pinData.auth_url;
+        const pinId = pinData.pin_id;
+
+        if (authUrl) {
+          window.open(authUrl, '_blank');
+        }
+
+        if (elements.hostPlexStatusMsg) {
+          elements.hostPlexStatusMsg.innerHTML = `Bitte bestätige die Anmeldung im geöffneten Plex-Fenster. (PIN-Code: <strong>${escapeHtml(pinData.code)}</strong>)`;
+        }
+
+        if (plexPinPollInterval) clearInterval(plexPinPollInterval);
+        let attempts = 0;
+        plexPinPollInterval = setInterval(async () => {
+          attempts++;
+          if (attempts > 60) {
+            clearInterval(plexPinPollInterval);
+            elements.btnHostPlexOAuth.disabled = false;
+            elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';
+            if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = 'Zeitüberschreitung bei Plex-Anmeldung.';
+            return;
+          }
+
+          try {
+            const checkRes = await fetch(`/api/plex/auth/check?pin_id=${pinId}`);
+            if (checkRes.ok) {
+              const checkData = await checkRes.json();
+              if (checkData.authorized) {
+                clearInterval(plexPinPollInterval);
+                elements.btnHostPlexOAuth.disabled = false;
+                elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';
+                if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = '';
+                showToast('🎉 Plex erfolgreich verknüpft!');
+                fetchHostConfig();
+                fetchHostPlexStatus();
+              }
+            }
+          } catch (e) {}
+        }, 2000);
+      }
+    } catch (err) {
+      showToast('Fehler beim Starten der Plex-Anmeldung.');
+      elements.btnHostPlexOAuth.disabled = false;
+      elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';
+    }
+  });
+}
+
 // Initial Boot
 fetchHostInfo();
 fetchHostConfig();
+fetchHostPlexStatus();
 fetchTracksList();

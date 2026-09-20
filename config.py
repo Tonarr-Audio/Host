@@ -30,6 +30,7 @@ class HostConfig(BaseModel):
     host_name: str = "Tonarr Host"
     port: int = 8765
     music_directory: str = "/music" if os.path.exists("/music") else str(Path.home() / "Music")
+    folder_source_for_creator_and_manager_only: bool = False
     
     # Priority & Behavior Configuration
     prefer_local_metadata: bool = True     # Prefer embedded tags (ID3/FLAC/Vorbis) over online scrapers
@@ -57,6 +58,13 @@ class HostConfig(BaseModel):
     genius_api_key: str = ""
     spotify_client_id: str = ""
     spotify_client_secret: str = ""
+
+    # Web Player Client Preferences
+    ambient_cover_bg: bool = False
+    eq_preset: str = "flat"
+    eq_bands: list = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    eq_preamp: float = 0.0
+    eq_limiter: bool = True
 
 def load_host_config() -> HostConfig:
     if CONFIG_FILE.exists():

@@ -127,6 +127,19 @@ body {
   background: rgba(16, 185, 129, 0.12);
   color: var(--accent-emerald);
   border: 1px solid rgba(16, 185, 129, 0.3);
+  transition: all var(--transition-fast);
+}
+
+.status-pill.connected {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-emerald);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.status-pill.disconnected {
+  background: rgba(244, 63, 94, 0.12);
+  color: var(--accent-rose);
+  border-color: rgba(244, 63, 94, 0.3);
 }
 
 .status-dot {

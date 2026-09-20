@@ -116,6 +116,18 @@
                 <button type="button" id="btnBrowseDir" class="btn btn-secondary btn-sm">Durchsuchen</button>
               </div>
               <span class="form-help">Im Docker-Container standardmäßig <code>/music</code> (über Docker Volumes gemountet).</span>
+
+              <!-- Exclusive Source for LRCCreator / MediaManager Toggle -->
+              <label class="switch-row" style="margin-top: 12px; padding: 12px 14px; background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.25); border-radius: var(--radius-md);">
+                <div class="switch-info">
+                  <strong style="color: #c4b5fd;">Ordner nur als Quelle für LRCCreator & MediaManager nutzen</strong>
+                  <span style="font-size: 0.78rem; color: var(--text-muted); display: block; margin-top: 3px;">
+                    Schließt lokale Dateien aus der Player-Streaming-Mediathek aus und reserviert diesen Ordner als Arbeitsquelle für Songtexte und Metadaten-Bearbeitung.
+                  </span>
+                </div>
+                <input type="checkbox" id="cfgFolderForCreatorOnly" class="switch-input">
+                <span class="switch-slider"></span>
+              </label>
             </div>
 
             <!-- Priority Settings -->
@@ -195,6 +207,86 @@
               </button>
             </div>
           </form>
+        </div>
+
+        <!-- Plex Media Server Integration Card -->
+        <div class="card plex-card" style="margin-top: 24px; border-left: 4px solid #e5a00d;">
+          <div class="card-header" style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div class="card-header-icon" style="background: rgba(229,160,13,0.15); color: #e5a00d; width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">📺</div>
+              <div>
+                <h2 class="card-title" style="margin: 0;">Plex Media Server</h2>
+                <p class="card-desc" style="margin: 2px 0 0 0;">Musik-Streaming, Playlists & Metadaten direkt auf dem Host anbinden</p>
+              </div>
+            </div>
+            <div id="hostPlexBadge" class="status-pill disconnected">
+              <span class="status-dot"></span>
+              <span id="hostPlexBadgeText">Nicht verbunden</span>
+            </div>
+          </div>
+
+          <!-- Logged In / Connected View -->
+          <div id="hostPlexConnectedView" style="display: none; flex-direction: column; gap: 14px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: var(--radius-md);">
+              <div>
+                <strong style="color: #e5a00d; font-size: 0.92rem;">Plex Server Aktiv</strong>
+                <div id="hostPlexServerInfo" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;">Server: Verbunden</div>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button type="button" id="btnHostPlexSync" class="btn btn-primary btn-sm" style="background: #e5a00d; color: #000; font-weight: 700;">
+                  <span>🔄 Songs & Playlists synchronisieren</span>
+                </button>
+                <button type="button" id="btnHostPlexLogout" class="btn btn-secondary btn-sm" style="color: #f87171; border-color: rgba(248,113,113,0.3);">
+                  <span>Trennen</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Library section select -->
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" style="display: flex; align-items: center; justify-content: space-between;">
+                <span>📚 Plex Musik-Mediathek</span>
+                <button type="button" id="btnRefreshHostPlexSections" class="btn-copy" title="Aktualisieren" style="padding: 2px 8px; font-size: 0.75rem;">
+                  <span>Aktualisieren</span>
+                </button>
+              </label>
+              <select id="hostPlexSectionSelect" class="form-input" style="background: var(--bg-surface-elevated); color: #fff; cursor: pointer;">
+                <option value="">Lade Mediatheken...</option>
+              </select>
+            </div>
+
+            <label class="switch-row" style="margin-top: 4px;">
+              <div class="switch-info">
+                <strong>Plex-Metadaten bevorzugen</strong>
+                <span>Titel, Künstler, Covers & Playlists von Plex gegenüber lokalen Tags priorisieren</span>
+              </div>
+              <input type="checkbox" id="cfgPreferPlexMeta" class="switch-input" checked>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <!-- Logged Out / Setup View -->
+          <div id="hostPlexLoggedOutView" style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+              <button type="button" id="btnHostPlexOAuth" class="btn btn-primary" style="background: #e5a00d; color: #000; font-weight: 700; padding: 10px 18px;">
+                <span>📺 Mit Plex anmelden (1-Klick OAuth)</span>
+              </button>
+              <button type="button" id="btnToggleManualHostPlex" class="btn btn-secondary btn-sm">Manuelle URL / Token</button>
+            </div>
+
+            <div id="hostPlexManualContainer" style="display: none; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--border-color); border-radius: var(--radius-md);">
+              <div>
+                <label class="form-label">Plex Server URL</label>
+                <input type="text" id="hostPlexUrlInput" class="form-input" placeholder="http://192.168.1.50:32400 oder http://localhost:32400">
+              </div>
+              <div>
+                <label class="form-label">Plex Token (X-Plex-Token)</label>
+                <input type="password" id="hostPlexTokenInput" class="form-input" placeholder="X-Plex-Token">
+              </div>
+              <button type="button" id="btnSaveManualHostPlex" class="btn btn-secondary" style="align-self: flex-start;">Verbindung testen & speichern</button>
+            </div>
+          </div>
+          <span id="hostPlexStatusMsg" style="font-size: 0.8rem; margin-top: 6px; display: block;"></span>
         </div>
 
         <!-- Right: Server Stats & Quick Explorer -->
