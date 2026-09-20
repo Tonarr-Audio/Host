@@ -2,6 +2,7 @@ version: "3.8"
 
 services:
   tonarr-host:
+    build: .
     image: ghcr.io/tonarr-audio/host:latest
     container_name: tonarr-host
     restart: unless-stopped

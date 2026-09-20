@@ -1,4 +1,4 @@
-// --- SoundSphere Host Frontend Controller ---
+// --- Tonarr Host Frontend Controller ---
 
 const state = {
   config: {},
