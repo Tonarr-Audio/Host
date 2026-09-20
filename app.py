@@ -504,13 +504,17 @@ async def get_plex_status(url: Optional[str] = Query(None), token: Optional[str]
         "error": res.get("error")
     }
 
+class HostPlexPinRequest(BaseModel):
+    callback_url: Optional[str] = ""
+
 @app.post("/api/plex/auth/pin")
-async def create_plex_pin():
-    return await HostPlexClient.create_auth_pin()
+async def create_plex_pin(req: Optional[HostPlexPinRequest] = None):
+    cb = req.callback_url if req else ""
+    return await HostPlexClient.create_auth_pin(cb)
 
 @app.get("/api/plex/auth/check")
-async def check_plex_pin(pin_id: int):
-    res = await HostPlexClient.check_auth_pin(pin_id)
+async def check_plex_pin(pin_id: int, code: str = ""):
+    res = await HostPlexClient.check_auth_pin(pin_id, code)
     if res.get("authorized"):
         token = res.get("token")
         servers = res.get("servers", [])
@@ -523,6 +527,68 @@ async def check_plex_pin(pin_id: int):
             config.plex_token = best_server.get("token") or token
         save_host_config(config)
     return res
+
+@app.get("/api/plex/callback", response_class=HTMLResponse)
+async def host_plex_auth_callback():
+    """Auto-closing callback page after Plex authentication."""
+    html_content = """<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Plex Anmeldung erfolgreich</title>
+  <style>
+    body {
+      background-color: #0f1117;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .card {
+      background: #1a1d26;
+      border: 1px solid #2e3446;
+      border-radius: 12px;
+      padding: 32px 24px;
+      text-align: center;
+      max-width: 380px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .icon { font-size: 48px; margin-bottom: 12px; }
+    h2 { margin: 0 0 8px 0; font-size: 1.3rem; color: #4ade80; }
+    p { color: #94a3b8; font-size: 0.9rem; line-height: 1.4; margin: 0 0 16px 0; }
+    .badge {
+      display: inline-block;
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: rgba(229, 160, 13, 0.15);
+      color: #e5a00d;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h2>Plex Anmeldung erfolgreich!</h2>
+    <p>Tonarr Host wurde erfolgreich autorisiert.<br>Dieses Fenster schließt sich in Kürze automatisch...</p>
+    <div class="badge">Tonarr Host</div>
+  </div>
+  <script>
+    try {
+      if (window.opener) {
+        window.opener.postMessage({ type: "PLEX_AUTH_SUCCESS" }, "*");
+      }
+    } catch (e) {}
+    setTimeout(function() {
+      try { window.close(); } catch (e) {}
+    }, 1000);
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
 
 @app.post("/api/plex/auth/logout")
 async def logout_plex():
