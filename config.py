@@ -31,6 +31,7 @@ class HostConfig(BaseModel):
     port: int = 8765
     music_directory: str = "/music" if os.path.exists("/music") else str(Path.home() / "Music")
     folder_source_for_creator_and_manager_only: bool = False
+    plex_as_only_player_source: bool = False
     
     # Priority & Behavior Configuration
     prefer_local_metadata: bool = True     # Prefer embedded tags (ID3/FLAC/Vorbis) over online scrapers
@@ -71,6 +72,10 @@ def load_host_config() -> HostConfig:
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                # Keep plex_as_only_player_source and folder_source_for_creator_and_manager_only synchronized
+                is_plex_only = bool(data.get("plex_as_only_player_source") or data.get("folder_source_for_creator_and_manager_only"))
+                data["plex_as_only_player_source"] = is_plex_only
+                data["folder_source_for_creator_and_manager_only"] = is_plex_only
                 return HostConfig(**data)
         except Exception as e:
             print(f"[HostConfig] Error loading {CONFIG_FILE}: {e}")

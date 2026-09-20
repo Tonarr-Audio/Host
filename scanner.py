@@ -168,7 +168,10 @@ async def scan_directory_streaming(custom_dir: Optional[str] = None) -> AsyncGen
         (t.get("title") or "").lower()
     ))
 
-    existing_plex = [t for t in library_cache.tracks if t.get("source") == "plex"]
+    existing_plex = [
+        t for t in library_cache.tracks 
+        if t.get("source") == "plex" or str(t.get("id", "")).startswith("plex_") or str(t.get("file_path", "")).startswith("plex://")
+    ]
     library_cache.tracks = scanned_tracks + existing_plex
     library_cache.music_directory = str(dir_path.resolve())
     library_cache.last_scanned = time.time()

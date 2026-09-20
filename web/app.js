@@ -31,7 +31,8 @@ const elements = {
   hostConfigForm: $('hostConfigForm'),
   cfgMusicDir: $('cfgMusicDir'),
   btnBrowseDir: $('btnBrowseDir'),
-  cfgFolderForCreatorOnly: $('cfgFolderForCreatorOnly'),
+  cfgPlexAsOnlyPlayerSource: $('cfgPlexAsOnlyPlayerSource'),
+  cfgFolderForCreatorOnly: $('cfgFolderForCreatorOnly') || $('cfgPlexAsOnlyPlayerSource'),
   cfgPreferLocalMeta: $('cfgPreferLocalMeta'),
   cfgPreferLocalLyrics: $('cfgPreferLocalLyrics'),
   cfgFetchMissingOnline: $('cfgFetchMissingOnline'),
@@ -139,7 +140,9 @@ async function fetchHostConfig() {
       state.config = cfg;
 
       if (elements.cfgMusicDir) elements.cfgMusicDir.value = cfg.music_directory || '';
-      if (elements.cfgFolderForCreatorOnly) elements.cfgFolderForCreatorOnly.checked = !!cfg.folder_source_for_creator_and_manager_only;
+      const isPlexOnly = !!(cfg.plex_as_only_player_source || cfg.folder_source_for_creator_and_manager_only);
+      if (elements.cfgPlexAsOnlyPlayerSource) elements.cfgPlexAsOnlyPlayerSource.checked = isPlexOnly;
+      if (elements.cfgFolderForCreatorOnly) elements.cfgFolderForCreatorOnly.checked = isPlexOnly;
       if (elements.cfgPreferLocalMeta) elements.cfgPreferLocalMeta.checked = !!cfg.prefer_local_metadata;
       if (elements.cfgPreferLocalLyrics) elements.cfgPreferLocalLyrics.checked = !!cfg.prefer_local_lyrics;
       if (elements.cfgFetchMissingOnline) elements.cfgFetchMissingOnline.checked = !!cfg.fetch_missing_online;
@@ -159,14 +162,46 @@ async function fetchHostConfig() {
   }
 }
 
+// Instant toggle for "Plex als einzige Player Quelle verwenden"
+const plexOnlyToggleEl = elements.cfgPlexAsOnlyPlayerSource || elements.cfgFolderForCreatorOnly;
+if (plexOnlyToggleEl) {
+  plexOnlyToggleEl.addEventListener('change', async (e) => {
+    const val = e.target.checked;
+    if (elements.cfgPlexAsOnlyPlayerSource) elements.cfgPlexAsOnlyPlayerSource.checked = val;
+    if (elements.cfgFolderForCreatorOnly) elements.cfgFolderForCreatorOnly.checked = val;
+
+    state.config = {
+      ...(state.config || {}),
+      plex_as_only_player_source: val,
+      folder_source_for_creator_and_manager_only: val
+    };
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.config)
+      });
+      if (res.ok) {
+        showToast(val ? '📺 Plex als einzige Player-Quelle aktiviert!' : '📁 Lokale Musikordner für Player wieder freigegeben.');
+        fetchTracksList();
+      }
+    } catch (err) {
+      showToast('Fehler beim Speichern der Einstellung.');
+    }
+  });
+}
+
 // 2. Save Config
 if (elements.hostConfigForm) {
   elements.hostConfigForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const isPlexOnly = elements.cfgPlexAsOnlyPlayerSource ? elements.cfgPlexAsOnlyPlayerSource.checked : (elements.cfgFolderForCreatorOnly ? elements.cfgFolderForCreatorOnly.checked : false);
     const updated = {
       ...state.config,
       music_directory: elements.cfgMusicDir.value.trim(),
-      folder_source_for_creator_and_manager_only: elements.cfgFolderForCreatorOnly ? elements.cfgFolderForCreatorOnly.checked : false,
+      plex_as_only_player_source: isPlexOnly,
+      folder_source_for_creator_and_manager_only: isPlexOnly,
       prefer_local_metadata: elements.cfgPreferLocalMeta.checked,
       prefer_local_lyrics: elements.cfgPreferLocalLyrics.checked,
       prefer_plex_metadata: elements.cfgPreferPlexMeta ? elements.cfgPreferPlexMeta.checked : true,

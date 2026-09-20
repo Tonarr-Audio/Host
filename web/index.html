@@ -117,15 +117,15 @@
               </div>
               <span class="form-help">Im Docker-Container standardmäßig <code>/music</code> (über Docker Volumes gemountet).</span>
 
-              <!-- Exclusive Source for LRCCreator / MediaManager Toggle -->
-              <label class="switch-row" style="margin-top: 12px; padding: 12px 14px; background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.25); border-radius: var(--radius-md);">
+              <!-- Plex als einzige Player Quelle Toggle -->
+              <label class="switch-row" style="margin-top: 12px; padding: 12px 14px; background: rgba(229,160,13,0.08); border: 1px solid rgba(229,160,13,0.3); border-radius: var(--radius-md);">
                 <div class="switch-info">
-                  <strong style="color: #c4b5fd;">Ordner nur als Quelle für LRCCreator & MediaManager nutzen</strong>
+                  <strong style="color: #f59e0b;">Plex als einzige Player Quelle verwenden</strong>
                   <span style="font-size: 0.78rem; color: var(--text-muted); display: block; margin-top: 3px;">
-                    Schließt lokale Dateien aus der Player-Streaming-Mediathek aus und reserviert diesen Ordner als Arbeitsquelle für Songtexte und Metadaten-Bearbeitung.
+                    Schließt lokale Musikordner aus dem Player aus – der Player streamt ausschließlich Titel aus deiner Plex-Mediathek. Der lokale Ordner dient nur als Arbeitsquelle für LRCCreator &amp; MediaManager.
                   </span>
                 </div>
-                <input type="checkbox" id="cfgFolderForCreatorOnly" class="switch-input">
+                <input type="checkbox" id="cfgPlexAsOnlyPlayerSource" class="switch-input">
                 <span class="switch-slider"></span>
               </label>
             </div>
