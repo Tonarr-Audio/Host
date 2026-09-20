@@ -432,7 +432,14 @@ class HostPlexClient:
                     data = res.json()
                     pin_id = data.get("id")
                     code = data.get("code")
-                    auth_url = f"https://app.plex.tv/auth#?clientID=Tonarr-Host&code={code}&context%5Bdevice%5D%5Bproduct%5D=Tonarr%20Host"
+                    auth_url = (
+                        f"https://app.plex.tv/auth/#?!"
+                        f"clientID=Tonarr-Host"
+                        f"&code={code}"
+                        f"&context%5Bdevice%5D%5Bproduct%5D=Tonarr%20Host"
+                        f"&context%5Bdevice%5D%5Bplatform%5D=Web"
+                        f"&context%5Bdevice%5D%5Bdevice%5D=Tonarr%20Host"
+                    )
                     return {"success": True, "pin_id": pin_id, "code": code, "auth_url": auth_url}
                 return {"success": False, "error": f"Plex PIN Fehler: HTTP {res.status_code}"}
         except Exception as e:
@@ -447,7 +454,7 @@ class HostPlexClient:
             "X-Plex-Client-Identifier": "Tonarr-Host"
         }
         try:
-            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
                 res = await client.get(url, headers=headers)
                 if res.status_code == 200:
                     data = res.json()
@@ -455,21 +462,36 @@ class HostPlexClient:
                     if token:
                         servers = []
                         try:
-                            res_servers = await client.get(f"https://plex.tv/api/v2/resources?includeHttps=1&X-Plex-Token={token}", headers=headers)
+                            res_servers = await client.get(
+                                f"https://plex.tv/api/v2/resources?includeHttps=1&X-Plex-Token={token}",
+                                headers=headers,
+                                timeout=8.0
+                            )
                             if res_servers.status_code == 200:
                                 resources = res_servers.json()
                                 for r in resources:
                                     if "server" in r.get("provides", []):
                                         server_token = r.get("accessToken") or token
                                         conns = r.get("connections", [])
+                                        # Prefer local IP connection first
+                                        best_uri = ""
                                         for c in conns:
-                                            servers.append({
-                                                "name": r.get("name"),
-                                                "uri": c.get("uri"),
-                                                "token": server_token
-                                            })
-                        except Exception:
-                            pass
+                                            if c.get("local") and c.get("uri"):
+                                                best_uri = c.get("uri")
+                                                break
+                                        if not best_uri and conns:
+                                            best_uri = conns[0].get("uri") or ""
+                                            if not best_uri and conns[0].get("address"):
+                                                best_uri = f"http://{conns[0].get('address')}:{conns[0].get('port', 32400)}"
+
+                                        servers.append({
+                                            "name": r.get("name"),
+                                            "uri": best_uri,
+                                            "token": server_token,
+                                            "connections": conns
+                                        })
+                        except Exception as e:
+                            print(f"[HostPlexClient] Server discovery error: {e}")
                         return {"authorized": True, "token": token, "servers": servers}
                     return {"authorized": False}
                 return {"authorized": False, "error": f"HTTP {res.status_code}"}

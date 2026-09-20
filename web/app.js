@@ -639,11 +639,57 @@ if (elements.btnSaveManualHostPlex) {
   });
 }
 
-// 1-Click OAuth PIN
+function openCenteredPlexPopup(url = 'about:blank') {
+  const width = 600;
+  const height = 700;
+  const left = window.screenLeft !== undefined
+    ? window.screenLeft + Math.max(0, (window.outerWidth - width) / 2)
+    : (window.screen.width - width) / 2;
+  const top = window.screenTop !== undefined
+    ? window.screenTop + Math.max(0, (window.outerHeight - height) / 2)
+    : (window.screen.height - height) / 2;
+
+  return window.open(
+    url,
+    'PlexOAuthWindow',
+    `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=no,resizable=yes,menubar=no,toolbar=no,location=yes`
+  );
+}
+
+// 1-Click OAuth PIN (Official Centered Popup Window)
 if (elements.btnHostPlexOAuth) {
   elements.btnHostPlexOAuth.addEventListener('click', async () => {
+    // Open centered popup window immediately on click gesture to prevent browser popup blockers
+    const popup = openCenteredPlexPopup();
+    if (popup) {
+      try {
+        popup.document.write(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Plex Anmeldung</title>
+            <style>
+              body { background: #0f1117; color: #fff; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+              .logo { font-size: 2.2rem; font-weight: 800; color: #e5a00d; margin-bottom: 12px; }
+              .spinner { width: 34px; height: 34px; border: 3px solid rgba(229,160,13,0.2); border-top-color: #e5a00d; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px; }
+              @keyframes spin { to { transform: rotate(360deg); } }
+              .txt { color: #94a3b8; font-size: 0.95rem; }
+            </style>
+          </head>
+          <body>
+            <div class="logo">📺 PLEX</div>
+            <div class="spinner"></div>
+            <div class="txt">Verbindung zum Plex-Login wird vorbereitet...</div>
+          </body>
+          </html>
+        `);
+      } catch (e) {}
+    }
+
     elements.btnHostPlexOAuth.disabled = true;
     elements.btnHostPlexOAuth.textContent = '⏳ PIN wird erstellt...';
+
     try {
       const res = await fetch('/api/plex/auth/pin', { method: 'POST' });
       if (res.ok) {
@@ -651,7 +697,10 @@ if (elements.btnHostPlexOAuth) {
         const authUrl = pinData.auth_url;
         const pinId = pinData.pin_id;
 
-        if (authUrl) {
+        if (popup && !popup.closed) {
+          popup.location.href = authUrl;
+          popup.focus();
+        } else {
           window.open(authUrl, '_blank');
         }
 
@@ -663,8 +712,11 @@ if (elements.btnHostPlexOAuth) {
         let attempts = 0;
         plexPinPollInterval = setInterval(async () => {
           attempts++;
-          if (attempts > 60) {
+          if (attempts > 90) {
             clearInterval(plexPinPollInterval);
+            if (popup && !popup.closed) {
+              try { popup.close(); } catch (e) {}
+            }
             elements.btnHostPlexOAuth.disabled = false;
             elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';
             if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = 'Zeitüberschreitung bei Plex-Anmeldung.';
@@ -677,18 +729,31 @@ if (elements.btnHostPlexOAuth) {
               const checkData = await checkRes.json();
               if (checkData.authorized) {
                 clearInterval(plexPinPollInterval);
+                
+                // AUTOMATICALLY CLOSE POPUP WINDOW ON SUCCESS!
+                if (popup && !popup.closed) {
+                  try { popup.close(); } catch (e) {}
+                }
+
                 elements.btnHostPlexOAuth.disabled = false;
                 elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';
                 if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = '';
                 showToast('🎉 Plex erfolgreich verknüpft!');
-                fetchHostConfig();
-                fetchHostPlexStatus();
+                await fetchHostConfig();
+                await fetchHostPlexStatus();
+                await fetchTracksList();
               }
             }
           } catch (e) {}
-        }, 2000);
+        }, 1500);
+      } else {
+        if (popup && !popup.closed) popup.close();
+        elements.btnHostPlexOAuth.disabled = false;
+        elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';
+        showToast('Fehler beim Abrufen des Plex-Pins.');
       }
     } catch (err) {
+      if (popup && !popup.closed) popup.close();
       showToast('Fehler beim Starten der Plex-Anmeldung.');
       elements.btnHostPlexOAuth.disabled = false;
       elements.btnHostPlexOAuth.innerHTML = '<span>📺 Mit Plex anmelden (1-Klick OAuth)</span>';

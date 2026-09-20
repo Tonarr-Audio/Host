@@ -478,10 +478,31 @@ async def get_track_lyrics(
 @app.get("/api/plex/status")
 @app.get("/api/plex/test")
 @app.post("/api/plex/test")
-async def get_plex_status():
+async def get_plex_status(url: Optional[str] = Query(None), token: Optional[str] = Query(None)):
     config = load_host_config()
-    client = HostPlexClient(config.plex_url, config.plex_token)
-    return await client.test_connection()
+    target_url = (url or config.plex_url or "").strip()
+    target_token = (token or config.plex_token or "").strip()
+    if not target_url or not target_token:
+        return {
+            "success": False,
+            "configured": False,
+            "reachable": False,
+            "error": "Plex Server ist auf dem Host noch nicht konfiguriert."
+        }
+    client = HostPlexClient(target_url, target_token)
+    res = await client.test_connection()
+    is_ok = bool(res.get("success"))
+    return {
+        "success": is_ok,
+        "configured": True,
+        "reachable": is_ok,
+        "server_name": res.get("name") or "Plex Media Server",
+        "version": res.get("version", ""),
+        "effective_url": res.get("effective_url", target_url),
+        "section": config.plex_section,
+        "prefer_plex_metadata": config.prefer_plex_metadata,
+        "error": res.get("error")
+    }
 
 @app.post("/api/plex/auth/pin")
 async def create_plex_pin():
