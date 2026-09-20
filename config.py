@@ -31,6 +31,7 @@ class HostConfig(BaseModel):
     
     # Priority & Behavior Configuration
     prefer_local_metadata: bool = True     # Prefer embedded tags (ID3/FLAC/Vorbis) over online scrapers
+    prefer_plex_metadata: bool = True      # Prefer Plex metadata & covers over ID3 tags when Plex is connected
     prefer_local_lyrics: bool = True       # Prefer local .lrc/.txt & embedded lyrics over online LRCLIB
     fetch_missing_online: bool = True      # Fetch missing lyrics/metadata from online sources
     save_fetched_lrc_locally: bool = True  # Automatically save fetched online .lrc files next to audio
@@ -39,6 +40,13 @@ class HostConfig(BaseModel):
     
     # Sources
     sources: MetadataSourceSettings = Field(default_factory=MetadataSourceSettings)
+    
+    # Plex Media Server Integration
+    plex_enabled: bool = False
+    plex_url: str = ""
+    plex_token: str = ""
+    plex_section: str = ""                 # Selected music library section key
+    sync_plex_on_scan: bool = True
     
     # Optional Security
     api_token: str = ""                    # If set, clients must pass X-SoundSphere-Token or ?token=

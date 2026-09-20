@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+data/
+host_config.json
+library_cache.json
+host_playlists.json
+.env
+.venv
+env/
+venv/
+ENV/

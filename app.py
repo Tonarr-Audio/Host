@@ -16,10 +16,12 @@ try:
     from .config import load_host_config, save_host_config, HostConfig, DATA_DIR
     from .scanner import library_cache, scan_directory_streaming
     from .metadata import metadata_engine
+    from .plex_client import HostPlexClient, load_host_playlists, save_host_playlists
 except (ImportError, ValueError):
     from config import load_host_config, save_host_config, HostConfig, DATA_DIR
     from scanner import library_cache, scan_directory_streaming
     from metadata import metadata_engine
+    from plex_client import HostPlexClient, load_host_playlists, save_host_playlists
 
 HOST_VERSION = "1.0.0"
 START_TIME = time.time()
@@ -304,6 +306,16 @@ async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Qu
                 target_path = track.get("file_path")
 
     if not target_path or not os.path.exists(target_path):
+        if track and track.get("plex_cover_url"):
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=8.0, verify=False) as client:
+                    r = await client.get(track["plex_cover_url"])
+                    if r.status_code == 200:
+                        c_type = r.headers.get("Content-Type", "image/jpeg")
+                        return Response(content=r.content, media_type=c_type, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+            except Exception:
+                pass
         raise HTTPException(status_code=404, detail="Datei nicht gefunden.")
 
     if target_path in _cover_cache:
@@ -407,7 +419,209 @@ async def get_track_lyrics(
         "content": content
     }
 
-# --- Mount Web UI Dashboard ---
+# --- PLEX MEDIA SERVER ENDPOINTS (Host Sync & Metadata Integration) ---
+@app.get("/api/plex/status")
+@app.get("/api/plex/test")
+@app.post("/api/plex/test")
+async def get_plex_status():
+    config = load_host_config()
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    return await client.test_connection()
+
+@app.post("/api/plex/auth/pin")
+async def create_plex_pin():
+    return await HostPlexClient.create_auth_pin()
+
+@app.get("/api/plex/auth/check")
+async def check_plex_pin(pin_id: int):
+    res = await HostPlexClient.check_auth_pin(pin_id)
+    if res.get("authorized"):
+        token = res.get("token")
+        servers = res.get("servers", [])
+        config = load_host_config()
+        config.plex_token = token
+        config.plex_enabled = True
+        if servers:
+            best_server = servers[0]
+            config.plex_url = best_server.get("uri", "")
+            config.plex_token = best_server.get("token") or token
+        save_host_config(config)
+    return res
+
+@app.post("/api/plex/auth/logout")
+async def logout_plex():
+    config = load_host_config()
+    config.plex_token = ""
+    config.plex_url = ""
+    config.plex_enabled = False
+    save_host_config(config)
+    return {"success": True, "message": "Plex Server erfolgreich vom Host getrennt."}
+
+@app.get("/api/plex/sections")
+async def get_plex_sections():
+    config = load_host_config()
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    return await client.get_music_sections()
+
+class SetSectionRequest(BaseModel):
+    section: str
+
+@app.post("/api/plex/set-section")
+async def set_plex_section(body: SetSectionRequest):
+    config = load_host_config()
+    config.plex_section = body.section
+    save_host_config(config)
+    return {"success": True, "section": body.section}
+
+@app.get("/api/plex/tracks")
+async def get_plex_tracks(section: Optional[str] = Query(None)):
+    config = load_host_config()
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    return await client.get_all_tracks(section or config.plex_section or None)
+
+@app.post("/api/plex/sync")
+async def sync_plex_endpoint():
+    """Synchronizes Plex library & playlists on the Host. Metadata from Plex is prioritized."""
+    config = load_host_config()
+    if not config.plex_url or not config.plex_token:
+        raise HTTPException(status_code=400, detail="Plex Server ist auf dem Host nicht konfiguriert.")
+    
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    tracks = await client.get_all_tracks(config.plex_section or None)
+    
+    updated_count = 0
+    if tracks and config.prefer_plex_metadata:
+        plex_by_title_artist = {}
+        plex_by_path = {}
+        for pt in tracks:
+            t_norm = (pt.get("title") or "").strip().lower()
+            a_norm = (pt.get("artist") or "").strip().lower()
+            if t_norm:
+                plex_by_title_artist[(t_norm, a_norm)] = pt
+                plex_by_title_artist[(t_norm, "")] = pt
+            s_path = pt.get("server_file_path") or ""
+            if s_path:
+                plex_by_path[Path(s_path).name.lower()] = pt
+
+        for lt in library_cache.tracks:
+            lt_title = (lt.get("title") or "").strip().lower()
+            lt_artist = (lt.get("artist") or "").strip().lower()
+            lt_file = Path(lt.get("file_path", "")).name.lower()
+            
+            match = plex_by_title_artist.get((lt_title, lt_artist)) or plex_by_title_artist.get((lt_title, "")) or plex_by_path.get(lt_file)
+            if match:
+                lt["title"] = match.get("title") or lt.get("title")
+                lt["artist"] = match.get("artist") or lt.get("artist")
+                lt["album"] = match.get("album") or lt.get("album")
+                lt["plex_key"] = match.get("plex_key")
+                if match.get("cover_url"):
+                    lt["plex_cover_url"] = match.get("cover_url")
+                    lt["cover_url"] = match.get("cover_url")
+                    lt["has_cover"] = True
+                if match.get("genre"):
+                    lt["genre"] = match.get("genre")
+                if match.get("year"):
+                    lt["year"] = match.get("year")
+                if match.get("track_number"):
+                    lt["track_number"] = match.get("track_number")
+                updated_count += 1
+                
+        library_cache.save()
+        library_cache._rebuild_map()
+
+    # Synchronize all Plex Playlists
+    plex_pls = await client.get_playlists()
+    synced_pls = []
+    for pl in plex_pls:
+        pl_key = pl.get("plex_key")
+        if pl_key:
+            pl_tracks = await client.get_playlist_tracks(str(pl_key))
+            track_ids = []
+            for pt in pl_tracks:
+                pt_norm = (pt.get("title") or "").strip().lower()
+                pa_norm = (pt.get("artist") or "").strip().lower()
+                matched_local = None
+                for lt in library_cache.tracks:
+                    if (lt.get("title") or "").strip().lower() == pt_norm and (lt.get("artist") or "").strip().lower() == pa_norm:
+                        matched_local = lt
+                        break
+                if matched_local:
+                    track_ids.append(matched_local.get("id"))
+                else:
+                    track_ids.append(pt.get("id") or f"plex_{pt.get('plex_key')}")
+            
+            synced_pls.append({
+                "id": pl.get("id"),
+                "name": pl.get("name"),
+                "source": "plex",
+                "track_count": len(track_ids),
+                "track_ids": track_ids,
+                "cover_url": pl.get("cover_url")
+            })
+
+    save_host_playlists(synced_pls)
+
+    return {
+        "success": True,
+        "count": len(tracks),
+        "updated_metadata_count": updated_count,
+        "playlist_count": len(synced_pls),
+        "tracks": tracks,
+        "playlists": synced_pls,
+        "message": f"{len(tracks)} Plex Songs & {len(synced_pls)} Playlists synchronisiert. {updated_count} lokale Titel mit Plex-Metadaten aktualisiert."
+    }
+
+@app.get("/api/plex/playlists")
+async def get_plex_playlists_endpoint():
+    config = load_host_config()
+    if not config.plex_url or not config.plex_token:
+        return load_host_playlists()
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    pls = await client.get_playlists()
+    return pls if pls else load_host_playlists()
+
+@app.get("/api/plex/playlists/{key}/tracks")
+async def get_plex_playlist_tracks_endpoint(key: str):
+    config = load_host_config()
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    return await client.get_playlist_tracks(key)
+
+@app.post("/api/plex/playlists/sync-all")
+async def sync_all_plex_playlists_endpoint():
+    res = await sync_plex_endpoint()
+    return {
+        "success": True,
+        "count": res.get("playlist_count", 0),
+        "playlists": res.get("playlists", []),
+        "new_tracks": res.get("tracks", [])
+    }
+
+# --- Universal Host Playlists API ---
+@app.get("/api/playlists")
+async def get_all_host_playlists():
+    return load_host_playlists()
+
+class SavePlaylistRequest(BaseModel):
+    name: str
+    source: Optional[str] = "custom"
+    track_ids: List[str] = []
+
+@app.post("/api/playlists")
+async def save_host_playlist_endpoint(pl: SavePlaylistRequest):
+    current = load_host_playlists()
+    import uuid
+    new_id = f"{pl.source}_{uuid.uuid4().hex[:8]}"
+    obj = {
+        "id": new_id,
+        "name": pl.name,
+        "source": pl.source or "custom",
+        "track_count": len(pl.track_ids),
+        "track_ids": pl.track_ids
+    }
+    current.append(obj)
+    save_host_playlists(current)
+    return {"success": True, "playlist": obj}
+
 WEB_DIR = Path(__file__).parent / "web"
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
