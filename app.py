@@ -27,15 +27,15 @@ HOST_VERSION = "1.0.0"
 START_TIME = time.time()
 
 app = FastAPI(
-    title="SoundSphere Host",
+    title="Tonarr Host",
     version=HOST_VERSION,
-    description="Dedicated High-Performance Music & Metadata Server for the SoundSphere Suite"
+    description="Dedicated High-Performance Music & Metadata Server for the Tonarr Suite"
 )
 
 @app.on_event("startup")
 async def on_startup():
     config = load_host_config()
-    print(f"[SoundSphere Host] v{HOST_VERSION} started. Data directory: {DATA_DIR}. Music directory: {config.music_directory}")
+    print(f"[Tonarr Host] v{HOST_VERSION} started. Data directory: {DATA_DIR}. Music directory: {config.music_directory}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,18 +46,22 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Type"],
 )
 
-# Optional Token Dependency
-async def verify_token(request: Request, x_soundsphere_token: Optional[str] = Header(None)):
+# Optional Token Dependency (Accepts X-Tonarr-Token, X-SoundSphere-Token, or ?token=)
+async def verify_token(
+    request: Request,
+    x_tonarr_token: Optional[str] = Header(None),
+    x_soundsphere_token: Optional[str] = Header(None)
+):
     config = load_host_config()
     if not config.api_token:
         return True
     
     query_token = request.query_params.get("token")
     auth_header = request.headers.get("authorization", "").replace("Bearer ", "")
-    passed = x_soundsphere_token or query_token or auth_header
+    passed = x_tonarr_token or x_soundsphere_token or query_token or auth_header
     
     if passed != config.api_token:
-        raise HTTPException(status_code=401, detail="Ungültiger oder fehlender SoundSphere Host Token.")
+        raise HTTPException(status_code=401, detail="Ungültiger oder fehlender Tonarr Host Token.")
     return True
 
 # --- Information & Status ---
@@ -79,7 +83,7 @@ async def get_host_status():
 
     return {
         "status": "online",
-        "app": "SoundSphere Host",
+        "app": "Tonarr Host",
         "version": HOST_VERSION,
         "host_name": config.host_name,
         "port": config.port,
@@ -631,4 +635,4 @@ if WEB_DIR.exists():
         index_path = WEB_DIR / "index.html"
         if index_path.exists():
             return FileResponse(str(index_path))
-        return HTMLResponse("<h2>SoundSphere Host ist aktiv!</h2>")
+        return HTMLResponse("<h2>Tonarr Host ist aktiv!</h2>")

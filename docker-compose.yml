@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  soundsphere-host:
+  tonarr-host:
     image: ghcr.io/tonarr-audio/host:latest
-    container_name: soundsphere-host
+    container_name: tonarr-host
     restart: unless-stopped
     ports:
       - "8765:8765"

@@ -30,15 +30,15 @@ class HostPlexClient:
         return {
             "X-Plex-Token": self.token,
             "Accept": "application/json",
-            "X-Plex-Product": "SoundSphere Host",
+            "X-Plex-Product": "Tonarr Host",
             "X-Plex-Version": "1.0.0",
-            "X-Plex-Client-Identifier": "SoundSphere-Host",
+            "X-Plex-Client-Identifier": "Tonarr-Host",
             "X-Plex-Platform": "Linux",
             "X-Plex-Platform-Version": "Docker",
             "X-Plex-Device": "Server",
-            "X-Plex-Device-Name": "SoundSphere Host",
+            "X-Plex-Device-Name": "Tonarr Host",
             "X-Plex-Model": "HostEdition",
-            "User-Agent": "SoundSphere-Host/1.0.0"
+            "User-Agent": "Tonarr-Host/1.0.0"
         }
 
     async def _get_working_base_url(self) -> str:
@@ -75,7 +75,7 @@ class HostPlexClient:
                 headers = {
                     "Accept": "application/json",
                     "X-Plex-Token": self.token,
-                    "X-Plex-Client-Identifier": "SoundSphere-Host"
+                    "X-Plex-Client-Identifier": "Tonarr-Host"
                 }
                 candidates = []
                 if self.base_url:
@@ -421,8 +421,8 @@ class HostPlexClient:
         url = "https://plex.tv/api/v2/pins?strong=true"
         headers = {
             "Accept": "application/json",
-            "X-Plex-Product": "SoundSphere Host",
-            "X-Plex-Client-Identifier": "SoundSphere-Host",
+            "X-Plex-Product": "Tonarr Host",
+            "X-Plex-Client-Identifier": "Tonarr-Host",
             "X-Plex-Version": "1.0.0"
         }
         try:
@@ -432,7 +432,7 @@ class HostPlexClient:
                     data = res.json()
                     pin_id = data.get("id")
                     code = data.get("code")
-                    auth_url = f"https://app.plex.tv/auth#?clientID=SoundSphere-Host&code={code}&context%5Bdevice%5D%5Bproduct%5D=SoundSphere%20Host"
+                    auth_url = f"https://app.plex.tv/auth#?clientID=Tonarr-Host&code={code}&context%5Bdevice%5D%5Bproduct%5D=Tonarr%20Host"
                     return {"success": True, "pin_id": pin_id, "code": code, "auth_url": auth_url}
                 return {"success": False, "error": f"Plex PIN Fehler: HTTP {res.status_code}"}
         except Exception as e:
@@ -444,7 +444,7 @@ class HostPlexClient:
         url = f"https://plex.tv/api/v2/pins/{pin_id}"
         headers = {
             "Accept": "application/json",
-            "X-Plex-Client-Identifier": "SoundSphere-Host"
+            "X-Plex-Client-Identifier": "Tonarr-Host"
         }
         try:
             async with httpx.AsyncClient(timeout=10.0, verify=False) as client:

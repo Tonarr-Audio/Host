@@ -30,7 +30,7 @@ class MultiSourceMetadataEngine:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
                 timeout=10.0,
-                headers={"User-Agent": "SoundSphere-Host/1.0 (https://github.com/NoahYTK2/SoundSphere-AIO)"}
+                headers={"User-Agent": "Tonarr-Host/1.0 (https://github.com/Tonarr-Audio/Host)"}
             )
         return self._http_client
 
@@ -301,7 +301,7 @@ class MultiSourceMetadataEngine:
             res = await client.get(
                 url,
                 params={"query": query, "fmt": "json", "limit": 1},
-                headers={"User-Agent": "SoundSphere-Host/1.0 (contact@soundsphere.local)"},
+                headers={"User-Agent": "Tonarr-Host/1.0 (contact@tonarr.local)"},
                 timeout=6.0
             )
             if res.status_code == 200:
@@ -357,7 +357,7 @@ class MultiSourceMetadataEngine:
             "lyrics_source": "none",
             "has_cover": False,
             "cover_source": "none",
-            "source": "soundsphere_host"
+            "source": "tonarr_host"
         }
 
         # Step 2: Resolve Lyrics with Priority

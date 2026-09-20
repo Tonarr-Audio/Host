@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field
 # Determine persistent config path (either in /data for docker or in user home)
 if os.path.exists("/data"):
     DATA_DIR = Path("/data")
-else:
+elif (Path.home() / ".soundsphere_host").exists() and not (Path.home() / ".tonarr_host").exists():
     DATA_DIR = Path.home() / ".soundsphere_host"
+else:
+    DATA_DIR = Path.home() / ".tonarr_host"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -25,7 +27,7 @@ class MetadataSourceSettings(BaseModel):
     spotify: bool = False
 
 class HostConfig(BaseModel):
-    host_name: str = "SoundSphere Host"
+    host_name: str = "Tonarr Host"
     port: int = 8765
     music_directory: str = "/music" if os.path.exists("/music") else str(Path.home() / "Music")
     

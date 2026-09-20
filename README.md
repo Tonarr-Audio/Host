@@ -1,6 +1,6 @@
-# SoundSphere Host 🎧
+# Tonarr Host 🎧
 
-SoundSphere Host is a fast, lightweight media streaming and metadata backend designed to power the [SoundSphere Player](https://github.com/Tonarr-Audio/Player) ecosystem. Built on FastAPI and Uvicorn, it indexes your music directory, streams audio with range-request support, serves album covers, and fetches synchronized lyrics dynamically.
+Tonarr Host is a fast, lightweight media streaming and metadata backend designed to power the [Tonarr Player](https://github.com/Tonarr-Audio/Player) ecosystem. Built on FastAPI and Uvicorn, it indexes your music directory, streams audio with range-request support, serves album covers, and fetches synchronized lyrics dynamically.
 
 ---
 
@@ -23,9 +23,9 @@ Create a `docker-compose.yml` file in your preferred directory:
 version: "3.8"
 
 services:
-  soundsphere-host:
+  tonarr-host:
     image: ghcr.io/tonarr-audio/host:latest
-    container_name: soundsphere-host
+    container_name: tonarr-host
     restart: unless-stopped
     ports:
       - "8765:8765"
@@ -47,7 +47,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Your SoundSphere Host will now be live at:
+Your Tonarr Host will now be live at:
 ```
 http://<your-server-ip>:8765
 ```
@@ -62,7 +62,7 @@ http://<your-server-ip>:8765
 4. Verify that:
    - **Port**: `8765` is mapped to `8765`.
    - **Volumes**: `/music` points to your actual music folder (e.g. `/DATA/Media/Music` or your storage drive path).
-   - **Volumes**: `/data` points to a local persistent directory (e.g. `/DATA/AppData/soundsphere/data`).
+   - **Volumes**: `/data` points to a local persistent directory (e.g. `/DATA/AppData/tonarr/data`).
 5. Click **Submit / Install**.
 
 ---
@@ -84,7 +84,7 @@ http://<your-server-ip>:8765
 
 ## 📡 API Endpoints
 
-SoundSphere Player connects to the following endpoints:
+Tonarr Player connects to the following endpoints:
 
 | Endpoint | Method | Description |
 |---|---|---|
