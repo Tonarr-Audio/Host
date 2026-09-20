@@ -41,6 +41,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Type"],
 )
 
 # Optional Token Dependency
@@ -208,72 +209,99 @@ async def get_single_track(track_id: str):
 # --- Audio Streaming (HTTP 206 Range Support) ---
 @app.get("/api/audio/stream")
 @app.get("/api/stream")
-async def stream_audio(path: Optional[str] = Query(None), id: Optional[str] = Query(None), request: Request = None):
-    target_path = path
-    if not target_path and id:
-        track = library_cache.get_track(id)
-        if track:
+@app.get("/api/stream/{track_id}")
+async def stream_audio(
+    track_id: Optional[str] = None,
+    id: Optional[str] = Query(None),
+    path: Optional[str] = Query(None),
+    request: Request = None
+):
+    query_id = track_id or id
+    target_path = None
+
+    if query_id:
+        clean_id = str(query_id).replace("host://", "").strip()
+        track = library_cache.get_track(clean_id) or library_cache.get_track(query_id)
+        if track and track.get("file_path") and os.path.exists(track.get("file_path")):
             target_path = track.get("file_path")
+
+    if not target_path and path:
+        clean_p = path.replace("host://", "").strip()
+        if os.path.exists(clean_p):
+            target_path = clean_p
+        else:
+            track = library_cache.get_track(clean_p)
+            if track and track.get("file_path") and os.path.exists(track.get("file_path")):
+                target_path = track.get("file_path")
 
     if not target_path or not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="Audiodatei nicht gefunden.")
 
-    file_size = os.path.getsize(target_path)
     ext = Path(target_path).suffix.lower()
-    
     content_type_map = {
         ".mp3": "audio/mpeg",
         ".flac": "audio/flac",
         ".m4a": "audio/mp4",
         ".aac": "audio/aac",
         ".ogg": "audio/ogg",
-        ".opus": "audio/opus",
+        ".opus": "audio/ogg",
         ".wav": "audio/wav",
         ".alac": "audio/mp4",
         ".aiff": "audio/aiff"
     }
     content_type = content_type_map.get(ext, "audio/mpeg")
 
-    range_header = request.headers.get("range") if request else None
-    if range_header:
-        byte_range = range_header.replace("bytes=", "").split("-")
-        start = int(byte_range[0])
-        end = int(byte_range[1]) if byte_range[1] else file_size - 1
-        length = end - start + 1
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type",
+        "Accept-Ranges": "bytes",
+    }
+    return FileResponse(
+        target_path,
+        media_type=content_type,
+        headers=headers
+    )
 
-        def iter_file():
-            with open(target_path, "rb") as f:
-                f.seek(start)
-                bytes_left = length
-                while bytes_left > 0:
-                    chunk = f.read(min(bytes_left, 65536))
-                    if not chunk:
-                        break
-                    bytes_left -= len(chunk)
-                    yield chunk
-
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(length),
-            "Content-Type": content_type,
+@app.options("/api/audio/stream")
+@app.options("/api/stream")
+@app.options("/api/stream/{track_id}")
+async def options_stream():
+    return Response(
+        status_code=200,
+        headers={
             "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type",
         }
-        return StreamingResponse(iter_file(), status_code=206, headers=headers)
-    else:
-        return FileResponse(target_path, media_type=content_type, headers={"Access-Control-Allow-Origin": "*"})
+    )
 
 # --- Cover Art ---
 _cover_cache: Dict[str, Tuple[bytes, str]] = {}
 
 @app.get("/api/track/cover")
 @app.get("/api/cover")
-async def get_cover_art(path: Optional[str] = Query(None), id: Optional[str] = Query(None)):
-    target_path = path
-    if not target_path and id:
-        track = library_cache.get_track(id)
-        if track:
+@app.get("/api/cover/{track_id}")
+async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Query(None), id: Optional[str] = Query(None)):
+    query_id = track_id or id
+    target_path = None
+
+    if query_id:
+        clean_id = str(query_id).replace("host://", "").strip()
+        track = library_cache.get_track(clean_id) or library_cache.get_track(query_id)
+        if track and track.get("file_path") and os.path.exists(track.get("file_path")):
             target_path = track.get("file_path")
+
+    if not target_path and path:
+        clean_p = path.replace("host://", "").strip()
+        if os.path.exists(clean_p):
+            target_path = clean_p
+        else:
+            track = library_cache.get_track(clean_p)
+            if track and track.get("file_path") and os.path.exists(track.get("file_path")):
+                target_path = track.get("file_path")
 
     if not target_path or not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="Datei nicht gefunden.")
@@ -309,12 +337,23 @@ async def get_track_lyrics(
     title: Optional[str] = Query(None),
     artist: Optional[str] = Query(None)
 ):
-    target_path = path
+    target_path = None
     track_obj = None
-    if not target_path and id:
-        track_obj = library_cache.get_track(id)
-        if track_obj:
+
+    if id:
+        clean_id = str(id).replace("host://", "").strip()
+        track_obj = library_cache.get_track(clean_id) or library_cache.get_track(id)
+        if track_obj and track_obj.get("file_path") and os.path.exists(track_obj.get("file_path")):
             target_path = track_obj.get("file_path")
+
+    if not target_path and path:
+        clean_p = path.replace("host://", "").strip()
+        if os.path.exists(clean_p):
+            target_path = clean_p
+        else:
+            track_obj = library_cache.get_track(clean_p)
+            if track_obj and track_obj.get("file_path") and os.path.exists(track_obj.get("file_path")):
+                target_path = track_obj.get("file_path")
 
     config = load_host_config()
     content = ""
