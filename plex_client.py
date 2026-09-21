@@ -26,10 +26,10 @@ class HostPlexClient:
     def is_configured(self) -> bool:
         return bool(self.base_url and self.token)
 
-    def _get_api_headers(self) -> Dict[str, str]:
+    def _get_headers(self, accept: str = "application/json") -> Dict[str, str]:
         return {
             "X-Plex-Token": self.token,
-            "Accept": "application/json",
+            "Accept": accept,
             "X-Plex-Product": "Tonarr Host",
             "X-Plex-Version": "1.0.0",
             "X-Plex-Client-Identifier": "Tonarr-Host",
@@ -41,20 +41,11 @@ class HostPlexClient:
             "User-Agent": "Tonarr-Host/1.0.0"
         }
 
-    def _get_headers(self) -> Dict[str, str]:
-        return {
-            "X-Plex-Token": self.token,
-            "Accept": "*/*",
-            "X-Plex-Product": "Tonarr Host",
-            "X-Plex-Version": "1.0.0",
-            "X-Plex-Client-Identifier": "Tonarr-Host",
-            "X-Plex-Platform": "Linux",
-            "X-Plex-Platform-Version": "Docker",
-            "X-Plex-Device": "Server",
-            "X-Plex-Device-Name": "Tonarr Host",
-            "X-Plex-Model": "HostEdition",
-            "User-Agent": "Tonarr-Host/1.0.0"
-        }
+    def _get_api_headers(self) -> Dict[str, str]:
+        return self._get_headers("application/json")
+
+    def _get_stream_headers(self) -> Dict[str, str]:
+        return self._get_headers("*/*")
 
     async def _get_working_base_url(self) -> str:
         """Finds or validates working base URL."""
@@ -69,8 +60,8 @@ class HostPlexClient:
 
         if self.base_url:
             try:
-                async with httpx.AsyncClient(timeout=2.5, verify=False) as client:
-                    res = await client.get(f"{self.base_url}/identity", headers=self._get_headers())
+                async with httpx.AsyncClient(timeout=4.5, verify=False, follow_redirects=True) as client:
+                    res = await client.get(f"{self.base_url}/identity", headers=self._get_api_headers())
                     if res.status_code == 200:
                         _GLOBAL_EFFECTIVE_URL["current"] = self.base_url
                         self._effective_url = self.base_url
@@ -90,7 +81,7 @@ class HostPlexClient:
                 if self.base_url:
                     candidates.append((self.base_url, self.token))
 
-                async with httpx.AsyncClient(timeout=5.0, verify=False) as http_client:
+                async with httpx.AsyncClient(timeout=5.0, verify=False, follow_redirects=True) as http_client:
                     res = await http_client.get("https://plex.tv/api/v2/resources?includeHttps=1", headers=headers)
                     if res.status_code == 200:
                         resources = res.json()
@@ -111,8 +102,8 @@ class HostPlexClient:
                 if candidates:
                     async def probe(url: str, tok: str):
                         try:
-                            async with httpx.AsyncClient(timeout=1.8, verify=False) as probe_client:
-                                p_res = await probe_client.get(f"{url}/identity", headers={"X-Plex-Token": tok})
+                            async with httpx.AsyncClient(timeout=2.5, verify=False, follow_redirects=True) as probe_client:
+                                p_res = await probe_client.get(f"{url}/identity", headers={"X-Plex-Token": tok, "Accept": "application/json"})
                                 if p_res.status_code == 200:
                                     return (url, tok)
                         except Exception:
@@ -152,12 +143,17 @@ class HostPlexClient:
             return {"success": False, "error": "Plex Server URL oder Token fehlt"}
         try:
             url = await self._get_working_base_url()
-            async with httpx.AsyncClient(timeout=6.0, verify=False) as client:
-                res = await client.get(f"{url}/identity", headers=self._get_headers())
+            async with httpx.AsyncClient(timeout=8.0, verify=False, follow_redirects=True) as client:
+                res = await client.get(f"{url}/identity", headers=self._get_api_headers())
                 if res.status_code == 200:
-                    data = res.json().get("MediaContainer", {})
+                    data = {}
+                    try:
+                        data = res.json().get("MediaContainer", {})
+                    except Exception:
+                        pass
                     return {
                         "success": True,
+                        "name": data.get("friendlyName") or "Plex Media Server",
                         "machineIdentifier": data.get("machineIdentifier", ""),
                         "version": data.get("version", "Plex Media Server"),
                         "effective_url": url
