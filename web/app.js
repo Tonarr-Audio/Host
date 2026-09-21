@@ -504,6 +504,9 @@ async function fetchHostPlexStatus() {
         if (elements.hostPlexServerInfo) {
           elements.hostPlexServerInfo.textContent = `Server: ${serverName} ${serverVer ? '(' + serverVer + ')' : ''} · ${serverUrl}`;
         }
+        if (elements.hostPlexStatusMsg) {
+          elements.hostPlexStatusMsg.textContent = '';
+        }
         
         loadHostPlexSections(data.section || (state.config && state.config.plex_section));
       } else {
@@ -513,7 +516,8 @@ async function fetchHostPlexStatus() {
         if (elements.hostPlexConnectedView) elements.hostPlexConnectedView.style.display = 'none';
         if (elements.hostPlexLoggedOutView) elements.hostPlexLoggedOutView.style.display = 'flex';
         if (data.configured && !data.reachable) {
-          if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = '⚠️ Plex Server konfiguriert, aber nicht erreichbar.';
+          const detail = data.error ? ` (${data.error})` : '';
+          if (elements.hostPlexStatusMsg) elements.hostPlexStatusMsg.textContent = `⚠️ Plex Server konfiguriert, aber nicht erreichbar${detail}`;
         }
       }
     }

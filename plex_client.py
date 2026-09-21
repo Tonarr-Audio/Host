@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 from pathlib import Path
@@ -14,11 +15,33 @@ except (ImportError, ValueError):
 _GLOBAL_EFFECTIVE_URL: Dict[str, str] = {}
 HOST_PLAYLISTS_FILE = DATA_DIR / "host_playlists.json"
 
+
+def rewrite_plex_direct_url(url: str) -> str:
+    """
+    Rewrites *.plex.direct URLs into direct IP addresses.
+    This prevents DNS resolution failures in Docker and local networks where
+    DNS rebinding protection drops *.plex.direct domain lookups.
+    Example: https://10-147-12-1.xxxx.plex.direct:32400 -> https://10.147.12.1:32400
+    """
+    if not url:
+        return ""
+    url_str = str(url).strip()
+    m = re.search(r'^(https?)://(\d+)[\.-](\d+)[\.-](\d+)[\.-](\d+)\.[^/:]+\.plex\.direct(:\d+)?(/.*)?$', url_str)
+    if m:
+        scheme = m.group(1)
+        ip = f"{m.group(2)}.{m.group(3)}.{m.group(4)}.{m.group(5)}"
+        port = m.group(6) or ":32400"
+        rest = m.group(7) or ""
+        return f"{scheme}://{ip}{port}{rest}"
+    return url_str
+
+
 class HostPlexClient:
     def __init__(self, base_url: str = "", token: str = ""):
         url = (base_url or "").strip().rstrip("/")
         if url and not url.startswith("http://") and not url.startswith("https://"):
             url = f"http://{url}"
+        url = rewrite_plex_direct_url(url).rstrip("/")
         self.base_url = url
         self.token = (token or "").strip()
         self._effective_url: Optional[str] = None
@@ -47,29 +70,95 @@ class HostPlexClient:
     def _get_stream_headers(self) -> Dict[str, str]:
         return self._get_headers("*/*")
 
+    async def _probe_url(self, url: str, token: str) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+        """Probes a candidate Plex URL, safely handling redirects to .plex.direct without DNS failure."""
+        clean_url = rewrite_plex_direct_url(url).rstrip("/")
+        if not clean_url:
+            return None
+        tok = token or self.token
+        try:
+            async with httpx.AsyncClient(timeout=3.5, verify=False, follow_redirects=False) as client:
+                for _ in range(3):
+                    headers = {
+                        "X-Plex-Token": tok,
+                        "Accept": "application/json",
+                        "X-Plex-Client-Identifier": "Tonarr-Host"
+                    }
+                    probe_target = f"{clean_url}/identity?X-Plex-Token={tok}"
+                    res = await client.get(probe_target, headers=headers)
+                    if res.status_code in (301, 302, 307, 308) and "location" in res.headers:
+                        loc = rewrite_plex_direct_url(res.headers["location"]).rstrip("/")
+                        clean_url = loc.split("/identity")[0].rstrip("/")
+                        continue
+                    if res.status_code == 200:
+                        data = {}
+                        try:
+                            data = res.json().get("MediaContainer", {})
+                        except Exception:
+                            pass
+                        return (clean_url, tok, data)
+                    elif res.status_code == 401:
+                        # Server reached, but token was invalid
+                        return (clean_url, tok, {"auth_error": True})
+                    break
+        except Exception:
+            pass
+        return None
+
     async def _get_working_base_url(self) -> str:
-        """Finds or validates working base URL."""
+        """Finds or validates working base URL with DNS-safe rewriting and candidate fallback."""
         if not self.base_url and not self.token:
             return ""
 
-        # Return validated cached URL immediately without redundant network pings
-        if "current" in _GLOBAL_EFFECTIVE_URL and _GLOBAL_EFFECTIVE_URL["current"]:
-            return _GLOBAL_EFFECTIVE_URL["current"]
-        if self._effective_url:
-            return self._effective_url
+        # 1. Quick check if cached URL is still alive
+        cached = _GLOBAL_EFFECTIVE_URL.get("current") or self._effective_url
+        if cached:
+            cached_clean = rewrite_plex_direct_url(cached).rstrip("/")
+            probe_res = await self._probe_url(cached_clean, self.token)
+            if probe_res:
+                winning_url, _, _ = probe_res
+                self._effective_url = winning_url
+                _GLOBAL_EFFECTIVE_URL["current"] = winning_url
+                return winning_url
+            else:
+                _GLOBAL_EFFECTIVE_URL.pop("current", None)
+                self._effective_url = None
 
+        # 2. Build prioritized direct IP candidates
+        candidates: List[Tuple[str, str]] = []
         if self.base_url:
-            try:
-                async with httpx.AsyncClient(timeout=4.5, verify=False, follow_redirects=True) as client:
-                    res = await client.get(f"{self.base_url}/identity", headers=self._get_api_headers())
-                    if res.status_code == 200:
-                        _GLOBAL_EFFECTIVE_URL["current"] = self.base_url
-                        self._effective_url = self.base_url
-                        return self.base_url
-            except Exception:
-                pass
+            clean = rewrite_plex_direct_url(self.base_url).rstrip("/")
+            candidates.append((clean, self.token))
+            if clean.startswith("http://"):
+                candidates.append((clean.replace("http://", "https://"), self.token))
+            elif clean.startswith("https://"):
+                candidates.append((clean.replace("https://", "http://"), self.token))
 
-        # Fast parallel auto-discovery via plex.tv resources
+            m_port = re.search(r':(\d+)', clean)
+            port = m_port.group(1) if m_port else "32400"
+            for alias in ("127.0.0.1", "localhost", "172.17.0.1", "host.docker.internal"):
+                candidates.append((f"http://{alias}:{port}", self.token))
+                candidates.append((f"https://{alias}:{port}", self.token))
+
+        # Probe direct candidates
+        for cand_url, cand_tok in candidates:
+            probe_res = await self._probe_url(cand_url, cand_tok)
+            if probe_res:
+                winning_url, winning_tok, _ = probe_res
+                self.base_url = winning_url
+                self.token = winning_tok
+                self._effective_url = winning_url
+                _GLOBAL_EFFECTIVE_URL["current"] = winning_url
+                try:
+                    cfg = load_host_config()
+                    if cfg.plex_url != winning_url:
+                        cfg.plex_url = winning_url
+                        save_host_config(cfg)
+                except Exception:
+                    pass
+                return winning_url
+
+        # 3. Fallback: Query plex.tv resources for updated connections
         if self.token:
             try:
                 headers = {
@@ -77,10 +166,7 @@ class HostPlexClient:
                     "X-Plex-Token": self.token,
                     "X-Plex-Client-Identifier": "Tonarr-Host"
                 }
-                candidates = []
-                if self.base_url:
-                    candidates.append((self.base_url, self.token))
-
+                resource_candidates = []
                 async with httpx.AsyncClient(timeout=5.0, verify=False, follow_redirects=True) as http_client:
                     res = await http_client.get("https://plex.tv/api/v2/resources?includeHttps=1", headers=headers)
                     if res.status_code == 200:
@@ -90,52 +176,38 @@ class HostPlexClient:
                                 server_token = r.get("accessToken") or self.token
                                 connections = r.get("connections", [])
                                 for c in connections:
-                                    uri = c.get("uri")
                                     addr = c.get("address")
                                     port = c.get("port", 32400)
-                                    if uri:
-                                        candidates.append((uri, server_token))
+                                    uri = rewrite_plex_direct_url(c.get("uri"))
+                                    # Prioritize local direct IP addresses!
                                     if addr:
-                                        candidates.append((f"http://{addr}:{port}", server_token))
-                                        candidates.append((f"https://{addr}:{port}", server_token))
+                                        resource_candidates.append((f"http://{addr}:{port}", server_token))
+                                        resource_candidates.append((f"https://{addr}:{port}", server_token))
+                                    if uri:
+                                        resource_candidates.append((uri, server_token))
 
-                if candidates:
-                    async def probe(url: str, tok: str):
-                        try:
-                            async with httpx.AsyncClient(timeout=2.5, verify=False, follow_redirects=True) as probe_client:
-                                p_res = await probe_client.get(f"{url}/identity", headers={"X-Plex-Token": tok, "Accept": "application/json"})
-                                if p_res.status_code == 200:
-                                    return (url, tok)
-                        except Exception:
-                            pass
-                        return None
-
-                    tasks = [asyncio.create_task(probe(u, t)) for u, t in candidates]
-                    for fut in asyncio.as_completed(tasks):
-                        result = await fut
-                        if result:
-                            winning_url, winning_token = result
-                            for t in tasks:
-                                t.cancel()
+                if resource_candidates:
+                    for cand_url, cand_tok in resource_candidates:
+                        probe_res = await self._probe_url(cand_url, cand_tok)
+                        if probe_res:
+                            winning_url, winning_tok, _ = probe_res
                             self.base_url = winning_url
-                            self.token = winning_token
+                            self.token = winning_tok
                             self._effective_url = winning_url
                             _GLOBAL_EFFECTIVE_URL["current"] = winning_url
-                            
-                            # Update config
                             try:
                                 cfg = load_host_config()
-                                if cfg.plex_url != winning_url or cfg.plex_token != winning_token:
+                                if cfg.plex_url != winning_url or cfg.plex_token != winning_tok:
                                     cfg.plex_url = winning_url
-                                    cfg.plex_token = winning_token
+                                    cfg.plex_token = winning_tok
                                     save_host_config(cfg)
                             except Exception:
                                 pass
                             return winning_url
             except Exception as e:
-                print(f"[HostPlexClient] Auto-discovery error: {e}")
+                print(f"[HostPlexClient] Plex.tv resources lookup error: {e}")
 
-        return self.base_url or ""
+        return rewrite_plex_direct_url(self.base_url).rstrip("/")
 
     async def test_connection(self) -> Dict[str, Any]:
         """Tests Plex connection and returns server details."""
@@ -143,23 +215,64 @@ class HostPlexClient:
             return {"success": False, "error": "Plex Server URL oder Token fehlt"}
         try:
             url = await self._get_working_base_url()
+            if not url:
+                _GLOBAL_EFFECTIVE_URL.pop("current", None)
+                return {"success": False, "error": "Plex Server unter der angegebenen Adresse nicht erreichbar."}
+
+            url = rewrite_plex_direct_url(url).rstrip("/")
             async with httpx.AsyncClient(timeout=8.0, verify=False, follow_redirects=True) as client:
-                res = await client.get(f"{url}/identity", headers=self._get_api_headers())
+                headers = self._get_api_headers()
+                
+                # 1. Try /identity
+                res = await client.get(f"{url}/identity?X-Plex-Token={self.token}", headers=headers)
                 if res.status_code == 200:
                     data = {}
                     try:
                         data = res.json().get("MediaContainer", {})
                     except Exception:
                         pass
+                    
+                    server_name = data.get("friendlyName") or ""
+                    version = data.get("version", "")
+                    
+                    # Fetch root if friendlyName was not in /identity
+                    if not server_name:
+                        try:
+                            root_res = await client.get(f"{url}/?X-Plex-Token={self.token}", headers=headers)
+                            if root_res.status_code == 200:
+                                root_data = root_res.json().get("MediaContainer", {})
+                                server_name = root_data.get("friendlyName") or ""
+                                version = root_data.get("version") or version
+                        except Exception:
+                            pass
+
                     return {
                         "success": True,
-                        "name": data.get("friendlyName") or "Plex Media Server",
+                        "name": server_name or "Plex Media Server",
                         "machineIdentifier": data.get("machineIdentifier", ""),
-                        "version": data.get("version", "Plex Media Server"),
+                        "version": version or "Plex Media Server",
                         "effective_url": url
                     }
+                elif res.status_code == 401:
+                    _GLOBAL_EFFECTIVE_URL.pop("current", None)
+                    return {"success": False, "error": "Plex Authentifizierung fehlgeschlagen (Token ungültig)."}
+
+                # 2. Try root /
+                root_res = await client.get(f"{url}/?X-Plex-Token={self.token}", headers=headers)
+                if root_res.status_code == 200:
+                    root_data = root_res.json().get("MediaContainer", {})
+                    return {
+                        "success": True,
+                        "name": root_data.get("friendlyName") or "Plex Media Server",
+                        "machineIdentifier": root_data.get("machineIdentifier", ""),
+                        "version": root_data.get("version") or "Plex Media Server",
+                        "effective_url": url
+                    }
+
+                _GLOBAL_EFFECTIVE_URL.pop("current", None)
                 return {"success": False, "error": f"Plex Fehler (HTTP {res.status_code})"}
         except Exception as e:
+            _GLOBAL_EFFECTIVE_URL.pop("current", None)
             return {"success": False, "error": str(e)}
 
     async def get_music_sections(self) -> List[Dict[str, Any]]:
@@ -629,26 +742,37 @@ class HostPlexClient:
                                         conns = item.get("connections", [])
                                         https_required = bool(item.get("httpsRequired"))
                                         best_uri = ""
+                                        # 1. Prioritize local direct IP address
                                         for c in conns:
-                                            uri = c.get("uri", "")
-                                            if https_required and uri.startswith("http://"):
-                                                uri = uri.replace("http://", "https://")
-                                            if c.get("local") and uri:
-                                                best_uri = uri
-                                                break
-                                        if not best_uri and conns:
-                                            uri = conns[0].get("uri", "")
-                                            if https_required and uri.startswith("http://"):
-                                                uri = uri.replace("http://", "https://")
-                                            best_uri = uri
-                                        if not best_uri and conns and conns[0].get("address"):
-                                            scheme = "https" if https_required else "http"
-                                            best_uri = f"{scheme}://{conns[0].get('address')}:{conns[0].get('port', 32400)}"
+                                            addr = c.get("address")
+                                            port = c.get("port", 32400)
+                                            uri = rewrite_plex_direct_url(c.get("uri", ""))
+                                            if c.get("local"):
+                                                if addr:
+                                                    scheme = "https" if https_required else "http"
+                                                    best_uri = f"{scheme}://{addr}:{port}"
+                                                    break
+                                                elif uri:
+                                                    best_uri = uri
+                                                    break
+                                        # 2. Fallback to any connection
+                                        if not best_uri:
+                                            for c in conns:
+                                                addr = c.get("address")
+                                                port = c.get("port", 32400)
+                                                uri = rewrite_plex_direct_url(c.get("uri", ""))
+                                                if addr:
+                                                    scheme = "https" if https_required else "http"
+                                                    best_uri = f"{scheme}://{addr}:{port}"
+                                                    break
+                                                elif uri:
+                                                    best_uri = uri
+                                                    break
 
                                         servers.append({
                                             "name": item.get("name"),
                                             "id": item.get("clientIdentifier"),
-                                            "uri": best_uri,
+                                            "uri": rewrite_plex_direct_url(best_uri),
                                             "token": server_token,
                                             "connections": conns
                                         })

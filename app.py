@@ -16,12 +16,12 @@ try:
     from .config import load_host_config, save_host_config, HostConfig, DATA_DIR
     from .scanner import library_cache, scan_directory_streaming
     from .metadata import metadata_engine
-    from .plex_client import HostPlexClient, load_host_playlists, save_host_playlists
+    from .plex_client import HostPlexClient, load_host_playlists, save_host_playlists, rewrite_plex_direct_url
 except (ImportError, ValueError):
     from config import load_host_config, save_host_config, HostConfig, DATA_DIR
     from scanner import library_cache, scan_directory_streaming
     from metadata import metadata_engine
-    from plex_client import HostPlexClient, load_host_playlists, save_host_playlists
+    from plex_client import HostPlexClient, load_host_playlists, save_host_playlists, rewrite_plex_direct_url
 
 HOST_VERSION = "1.0.0"
 START_TIME = time.time()
@@ -416,6 +416,7 @@ async def stream_audio(
             try:
                 client = HostPlexClient(config.plex_url, config.plex_token)
                 base_url = await client._get_working_base_url()
+                base_url = rewrite_plex_direct_url(base_url).rstrip("/")
                 
                 part_key = track.get("part_key") if track else None
                 container = (track.get("extension", ".mp3").replace(".", "") if track else "mp3")
@@ -438,7 +439,9 @@ async def stream_audio(
                 if not part_key:
                     part_key = f"/library/parts/{clean_plex_key}/file"
 
-                full_stream_url = f"{base_url}{part_key}?X-Plex-Token={config.plex_token}"
+                sep = "" if part_key.startswith("/") else "/"
+                token_sep = "&" if "?" in part_key else "?"
+                full_stream_url = f"{base_url}{sep}{part_key}{token_sep}X-Plex-Token={config.plex_token}"
                 req_headers = {
                     "X-Plex-Token": config.plex_token,
                     "Accept": "*/*",
@@ -622,7 +625,7 @@ async def get_cover_art(
     if config.plex_url and config.plex_token:
         try:
             client = HostPlexClient(config.plex_url, config.plex_token)
-            base_url = await client._get_working_base_url()
+            base_url = rewrite_plex_direct_url(await client._get_working_base_url()).rstrip("/")
             if base_url:
                 async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True) as http_client:
                     # Try direct thumb paths
@@ -633,7 +636,8 @@ async def get_cover_art(
                         if str(tp).startswith("http"):
                             final_cov = tp if "X-Plex-Token=" in tp else f"{tp}{'&' if '?' in tp else '?'}X-Plex-Token={config.plex_token}"
                         else:
-                            final_cov = f"{base_url}{sep}{tp}?X-Plex-Token={config.plex_token}"
+                            tok_sep = "&" if "?" in str(tp) else "?"
+                            final_cov = f"{base_url}{sep}{tp}{tok_sep}X-Plex-Token={config.plex_token}"
                         try:
                             r = await http_client.get(final_cov, headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
                             if r.status_code == 200 and r.content and len(r.content) > 200:
@@ -677,7 +681,8 @@ async def get_cover_art(
                                 for cand in candidate_thumbs:
                                     if cand:
                                         sep = "" if str(cand).startswith("/") else "/"
-                                        c_url = f"{base_url}{sep}{cand}?X-Plex-Token={config.plex_token}"
+                                        tok_sep = "&" if "?" in str(cand) else "?"
+                                        c_url = f"{base_url}{sep}{cand}{tok_sep}X-Plex-Token={config.plex_token}"
                                         r = await http_client.get(c_url, headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
                                         if r.status_code == 200 and r.content and len(r.content) > 200:
                                             c_type = r.headers.get("Content-Type", "image/jpeg")
@@ -937,25 +942,39 @@ async def get_track_lyrics(
 @app.post("/api/plex/test")
 async def get_plex_status(url: Optional[str] = Query(None), token: Optional[str] = Query(None)):
     config = load_host_config()
-    target_url = (url or config.plex_url or "").strip()
+    raw_url = (url or config.plex_url or "").strip()
     target_token = (token or config.plex_token or "").strip()
-    if not target_url or not target_token:
+    if not raw_url or not target_token:
         return {
             "success": False,
             "configured": False,
             "reachable": False,
             "error": "Plex Server ist auf dem Host noch nicht konfiguriert."
         }
+    
+    # Auto-sanitize any .plex.direct domain stored previously in config
+    target_url = rewrite_plex_direct_url(raw_url).rstrip("/")
+    if not url and target_url != config.plex_url:
+        config.plex_url = target_url
+        save_host_config(config)
+
     client = HostPlexClient(target_url, target_token)
     res = await client.test_connection()
     is_ok = bool(res.get("success"))
+    effective = res.get("effective_url", target_url)
+
+    # Persist working effective URL if discovered
+    if is_ok and effective and not url and effective != config.plex_url:
+        config.plex_url = effective
+        save_host_config(config)
+
     return {
         "success": is_ok,
         "configured": True,
         "reachable": is_ok,
         "server_name": res.get("name") or "Plex Media Server",
         "version": res.get("version", ""),
-        "effective_url": res.get("effective_url", target_url),
+        "effective_url": effective,
         "section": config.plex_section,
         "prefer_plex_metadata": config.prefer_plex_metadata,
         "error": res.get("error")
@@ -980,7 +999,8 @@ async def check_plex_pin(pin_id: int, code: str = ""):
         config.plex_enabled = True
         if servers:
             best_server = servers[0]
-            config.plex_url = best_server.get("uri", "")
+            best_uri = rewrite_plex_direct_url(best_server.get("uri", "")).rstrip("/")
+            config.plex_url = best_uri
             config.plex_token = best_server.get("token") or token
         save_host_config(config)
     return res
