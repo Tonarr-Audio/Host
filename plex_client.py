@@ -286,11 +286,11 @@ class HostPlexClient:
                             "disc_number": item.get("parentIndex", 1),
                             "genre": item.get("Genre", [{}])[0].get("tag") if item.get("Genre") else None,
                             "duration": dur_sec,
-                            "duration_str": dur_str,
-                            "stream_url": f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else "",
-                            "cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
+                            "stream_url": f"/api/plex/stream/{r_key}",
+                            "cover_url": f"/api/cover?id=plex_{r_key}",
                             "thumb": thumb,
                             "plex_cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
+                            "plex_stream_url": f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else "",
                             "extension": f".{container}",
                             "codec": codec_upper,
                             "bitrate": bitrate,
@@ -336,7 +336,7 @@ class HostPlexClient:
                     thumb_val = p.get("thumb") or ""
                     comp_val = p.get("composite") or ""
                     thumb_key = thumb_val or comp_val
-                    cover_url = f"{url}{thumb_key}?X-Plex-Token={self.token}" if thumb_key else ""
+                    cover_url = f"/api/playlist/cover?key={r_key}&thumb={thumb_val}&composite={comp_val}" if thumb_key else ""
                     result.append({
                         "id": f"plex_{r_key}",
                         "host_id": f"plex_{r_key}",
@@ -403,8 +403,8 @@ class HostPlexClient:
                         mins = int(dur_sec // 60)
                         secs = int(dur_sec % 60)
 
-                        stream_url = f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else ""
-                        cover_url = f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else ""
+                        plex_stream_url = f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else ""
+                        plex_cover_url = f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else ""
 
                         tracks.append({
                             "id": f"plex_{r_key}",
@@ -419,8 +419,8 @@ class HostPlexClient:
                             "album": item.get("parentTitle", "Unbekanntes Album"),
                             "duration": dur_sec,
                             "duration_str": f"{mins:02d}:{secs:02d}",
-                            "stream_url": stream_url,
-                            "cover_url": cover_url,
+                            "stream_url": f"/api/plex/stream/{r_key}",
+                            "cover_url": f"/api/cover?id=plex_{r_key}",
                             "extension": f".{container}",
                             "codec": codec_upper,
                             "bitrate": bitrate,
@@ -430,7 +430,8 @@ class HostPlexClient:
                             "quality_str": quality_str,
                             "is_lossless": is_lossless,
                             "thumb": thumb,
-                            "plex_cover_url": cover_url,
+                            "plex_cover_url": plex_cover_url,
+                            "plex_stream_url": plex_stream_url,
                             "is_hi_res": is_hi_res,
                             "source": "plex"
                         })
