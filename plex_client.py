@@ -208,6 +208,7 @@ class HostPlexClient:
                 if not target_sections:
                     target_sections = [{"key": "all"}]
 
+            seen_rating_keys = set()
             async with httpx.AsyncClient(timeout=40.0, verify=False) as client:
                 for sec in target_sections:
                     sec_key = sec.get("key")
@@ -231,9 +232,10 @@ class HostPlexClient:
                             continue
 
                     for item in metadata:
-                        rating_key = str(item.get("ratingKey", ""))
-                        if not rating_key:
+                        rating_key = str(item.get("ratingKey", "")).strip()
+                        if not rating_key or rating_key in seen_rating_keys:
                             continue
+                        seen_rating_keys.add(rating_key)
                             
                         media_list = item.get("Media", [])
                         part = media_list[0].get("Part", [{}])[0] if media_list else {}

@@ -171,6 +171,17 @@ async def trigger_scan_endpoint(directory: Optional[str] = None):
     asyncio.create_task(_run())
     return {"status": "started", "message": "Mediathek-Scan gestartet."}
 
+def _clean_track_text(s: str) -> str:
+    if not s:
+        return ""
+    import re
+    txt = s.lower().strip()
+    txt = re.sub(r'^\d+[\s\.\-_]+', '', txt).strip()
+    txt = re.sub(r'\s*(feat\.?|featuring|ft\.).*$', '', txt, flags=re.IGNORECASE).strip()
+    txt = re.sub(r'\s*[\(\[](remastered|remaster|album version|official|deluxe|bonus|live).*?[\)\]]', '', txt, flags=re.IGNORECASE).strip()
+    txt = re.sub(r'[^\w\s]', '', txt)
+    return re.sub(r'\s+', ' ', txt).strip()
+
 # --- Tracks & Library API ---
 @app.get("/api/tracks")
 async def get_tracks_list(
@@ -183,25 +194,57 @@ async def get_tracks_list(
     include_creator_only: bool = Query(False)
 ):
     config = load_host_config()
-    tracks = library_cache.tracks
+    raw_tracks = library_cache.tracks
 
     # If folder is used only as source for LRCCreator & MediaManager / Plex is the only Player source:
     # exclude local folder tracks from Player requests
     plex_only = bool(config.plex_as_only_player_source or config.folder_source_for_creator_and_manager_only)
-    if plex_only:
-        is_creator_or_manager = (client or "").lower().strip() in ("creator", "lrccreator", "mediamanager", "manager") or include_creator_only
-        if not is_creator_or_manager:
-            def is_plex_track_item(t):
-                if not t:
-                    return False
-                return (
-                    t.get("source") == "plex" or
-                    bool(t.get("plex_key")) or
-                    str(t.get("file_path", "")).startswith("plex://") or
-                    str(t.get("id", "")).startswith("plex_") or
-                    str(t.get("id", "")).startswith("plex://")
-                )
-            tracks = [t for t in tracks if is_plex_track_item(t)]
+    is_creator_or_manager = (client or "").lower().strip() in ("creator", "lrccreator", "mediamanager", "manager") or include_creator_only
+
+    def is_plex_available(t):
+        if not t:
+            return False
+        if t.get("source") == "plex":
+            return True
+        if bool(t.get("plex_key")):
+            return True
+        fpath = str(t.get("file_path", ""))
+        if fpath.startswith("plex://"):
+            return True
+        tid = str(t.get("id", ""))
+        if tid.startswith("plex_") or tid.startswith("plex://"):
+            return True
+        return False
+
+    if plex_only and not is_creator_or_manager:
+        candidate_tracks = [t for t in raw_tracks if is_plex_available(t)]
+    else:
+        candidate_tracks = raw_tracks
+
+    # Deduplicate tracks so each song appears exactly once
+    seen_keys = set()
+    seen_norms = set()
+    seen_files = set()
+    tracks = []
+    for t in candidate_tracks:
+        pkey = str(t.get("plex_key") or "").strip()
+        fpath = Path(str(t.get("server_file_path") or t.get("file_path") or "")).name.lower()
+        norm_at = (_clean_track_text(t.get("artist") or ""), _clean_track_text(t.get("title") or ""))
+
+        if pkey and pkey in seen_keys:
+            continue
+        if fpath and not fpath.startswith("plex:") and fpath in seen_files:
+            continue
+        if norm_at[0] and norm_at[1] and norm_at in seen_norms:
+            continue
+
+        if pkey:
+            seen_keys.add(pkey)
+        if fpath and not fpath.startswith("plex:"):
+            seen_files.add(fpath)
+        if norm_at[0] and norm_at[1]:
+            seen_norms.add(norm_at)
+        tracks.append(t)
 
     if artist:
         art_clean = artist.lower().strip()
@@ -646,12 +689,15 @@ async def sync_plex_endpoint():
     tracks = await client.get_all_tracks(config.plex_section or None)
     
     updated_count = 0
-    if tracks and config.prefer_plex_metadata:
+    matched_plex_keys = set()
+    matched_plex_files = set()
+
+    if tracks:
         plex_by_title_artist = {}
         plex_by_path = {}
         for pt in tracks:
-            t_norm = (pt.get("title") or "").strip().lower()
-            a_norm = (pt.get("artist") or "").strip().lower()
+            t_norm = _clean_track_text(pt.get("title") or "")
+            a_norm = _clean_track_text(pt.get("artist") or "")
             if t_norm:
                 plex_by_title_artist[(t_norm, a_norm)] = pt
                 plex_by_title_artist[(t_norm, "")] = pt
@@ -660,35 +706,55 @@ async def sync_plex_endpoint():
                 plex_by_path[Path(s_path).name.lower()] = pt
 
         for lt in library_cache.tracks:
-            lt_title = (lt.get("title") or "").strip().lower()
-            lt_artist = (lt.get("artist") or "").strip().lower()
+            lt_title = _clean_track_text(lt.get("title") or "")
+            lt_artist = _clean_track_text(lt.get("artist") or "")
             lt_file = Path(lt.get("file_path", "")).name.lower()
             
             match = plex_by_title_artist.get((lt_title, lt_artist)) or plex_by_title_artist.get((lt_title, "")) or plex_by_path.get(lt_file)
             if match:
-                lt["title"] = match.get("title") or lt.get("title")
-                lt["artist"] = match.get("artist") or lt.get("artist")
-                lt["album"] = match.get("album") or lt.get("album")
+                pkey = str(match.get("plex_key") or match.get("id") or "")
                 lt["plex_key"] = match.get("plex_key")
+                if pkey:
+                    matched_plex_keys.add(pkey)
+                if match.get("server_file_path"):
+                    matched_plex_files.add(Path(match["server_file_path"]).name.lower())
+                if match.get("stream_url"):
+                    lt["stream_url"] = match.get("stream_url")
                 if match.get("cover_url"):
                     lt["plex_cover_url"] = match.get("cover_url")
                     lt["cover_url"] = match.get("cover_url")
                     lt["has_cover"] = True
-                if match.get("genre"):
-                    lt["genre"] = match.get("genre")
-                if match.get("year"):
-                    lt["year"] = match.get("year")
-                if match.get("track_number"):
-                    lt["track_number"] = match.get("track_number")
+                if config.prefer_plex_metadata:
+                    lt["title"] = match.get("title") or lt.get("title")
+                    lt["artist"] = match.get("artist") or lt.get("artist")
+                    lt["album"] = match.get("album") or lt.get("album")
+                    if match.get("genre"):
+                        lt["genre"] = match.get("genre")
+                    if match.get("year"):
+                        lt["year"] = match.get("year")
+                    if match.get("track_number"):
+                        lt["track_number"] = match.get("track_number")
                 updated_count += 1
 
-    # Ensure all Plex tracks are available in the Host library
+    # Cleanly store and deduplicate Plex tracks in Host library cache
     if tracks:
-        existing_plex_ids = {t.get("id") for t in library_cache.tracks if t.get("source") == "plex" or str(t.get("id", "")).startswith("plex_")}
-        new_plex_tracks = [pt for pt in tracks if pt.get("id") not in existing_plex_ids]
-        if new_plex_tracks:
-            library_cache.tracks.extend(new_plex_tracks)
+        # Keep local folder tracks for LRCCreator / MediaManager
+        local_tracks = [t for t in library_cache.tracks if t.get("source") != "plex" and not str(t.get("file_path", "")).startswith("plex://")]
+        
+        seen_pids = set()
+        unique_plex = []
+        for pt in tracks:
+            pkey = str(pt.get("plex_key") or pt.get("id") or "").strip()
+            p_name = Path(pt.get("server_file_path", "")).name.lower() if pt.get("server_file_path") else ""
+            if pkey in matched_plex_keys or (p_name and p_name in matched_plex_files):
+                continue
+            pid = str(pt.get("id") or f"plex_{pt.get('plex_key')}").strip()
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            unique_plex.append(pt)
 
+        library_cache.tracks = local_tracks + unique_plex
         library_cache.save()
         library_cache._rebuild_map()
 
