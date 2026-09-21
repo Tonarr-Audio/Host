@@ -342,26 +342,32 @@ async def get_single_track(track_id: str):
 
 # --- Audio Streaming (HTTP 206 Range Support) ---
 @app.get("/api/audio/stream")
+@app.get("/api/audio/stream/{track_id}")
 @app.get("/api/stream")
 @app.get("/api/stream/{track_id}")
+@app.head("/api/audio/stream")
+@app.head("/api/audio/stream/{track_id}")
+@app.head("/api/stream")
+@app.head("/api/stream/{track_id}")
 async def stream_audio(
     track_id: Optional[str] = None,
     id: Optional[str] = Query(None),
     path: Optional[str] = Query(None),
+    key: Optional[str] = Query(None),
     request: Request = None
 ):
-    query_id = track_id or id
+    query_id = track_id or id or key
     target_path = None
     track = None
 
     if query_id:
-        clean_id = str(query_id).replace("host://", "").strip()
+        clean_id = urllib.parse.unquote(str(query_id)).replace("host://", "").strip()
         track = library_cache.get_track(clean_id) or library_cache.get_track(query_id)
         if track and track.get("file_path") and os.path.exists(str(track.get("file_path"))):
             target_path = track.get("file_path")
 
     if not target_path and path:
-        clean_p = path.replace("host://", "").strip()
+        clean_p = urllib.parse.unquote(str(path)).replace("host://", "").strip()
         if os.path.exists(clean_p):
             target_path = clean_p
         else:
@@ -394,14 +400,14 @@ async def stream_audio(
         return FileResponse(target_path, media_type=content_type, headers=headers)
 
     # 2. Plex track streaming via Host with HTTP 206 Range proxying
+    raw_ident = query_id or path or ""
+    clean_ident = urllib.parse.unquote(str(raw_ident)).replace("host://", "").replace("plex://", "").strip()
     clean_plex_key = None
-    if query_id and str(query_id).startswith("plex_"):
-        clean_plex_key = str(query_id).replace("plex_", "")
-    elif query_id and str(query_id).isdigit():
-        clean_plex_key = str(query_id)
-    elif path and "plex://" in str(path):
-        clean_plex_key = str(path).replace("plex://", "")
-    elif track and track.get("source") == "plex":
+    if clean_ident.startswith("plex_"):
+        clean_plex_key = clean_ident.replace("plex_", "")
+    elif clean_ident.isdigit():
+        clean_plex_key = clean_ident
+    elif track and (track.get("source") == "plex" or track.get("plex_key")):
         clean_plex_key = str(track.get("plex_key") or str(track.get("id", "")).replace("plex_", ""))
 
     if clean_plex_key:
@@ -414,11 +420,11 @@ async def stream_audio(
                 part_key = track.get("part_key") if track else None
                 container = (track.get("extension", ".mp3").replace(".", "") if track else "mp3")
                 
-                if not part_key:
-                    async with httpx.AsyncClient(timeout=10.0, verify=False) as http_client:
+                if not part_key and base_url:
+                    async with httpx.AsyncClient(timeout=12.0, verify=False, follow_redirects=True) as http_client:
                         m_res = await http_client.get(
                             f"{base_url}/library/metadata/{clean_plex_key}?X-Plex-Token={config.plex_token}",
-                            headers=client._get_headers()
+                            headers=client._get_api_headers()
                         )
                         if m_res.status_code == 200:
                             meta_item = m_res.json().get("MediaContainer", {}).get("Metadata", [{}])[0]
@@ -433,20 +439,51 @@ async def stream_audio(
                     part_key = f"/library/parts/{clean_plex_key}/file"
 
                 full_stream_url = f"{base_url}{part_key}?X-Plex-Token={config.plex_token}"
-                req_headers = client._get_headers()
+                req_headers = {
+                    "X-Plex-Token": config.plex_token,
+                    "Accept": "*/*",
+                    "User-Agent": "Tonarr-Host/1.0.0",
+                }
                 range_hdr = request.headers.get("range") if request else None
                 if range_hdr:
                     req_headers["Range"] = range_hdr
 
-                stream_client = httpx.AsyncClient(timeout=40.0, verify=False)
+                stream_client = httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True)
+
+                # If HEAD request, probe upstream without streaming payload
+                if request and request.method.upper() == "HEAD":
+                    upstream_resp = await stream_client.head(full_stream_url, headers=req_headers)
+                    resp_headers = {
+                        "Accept-Ranges": "bytes",
+                        "Content-Type": upstream_resp.headers.get("content-type", f"audio/{container}"),
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                        "Access-Control-Allow-Headers": "*",
+                        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type",
+                    }
+                    if "content-length" in upstream_resp.headers:
+                        resp_headers["Content-Length"] = upstream_resp.headers["content-length"]
+                    if "content-range" in upstream_resp.headers:
+                        resp_headers["Content-Range"] = upstream_resp.headers["content-range"]
+                    await upstream_resp.aclose()
+                    await stream_client.aclose()
+                    return Response(status_code=upstream_resp.status_code, headers=resp_headers)
+
                 upstream_req = stream_client.build_request("GET", full_stream_url, headers=req_headers)
                 upstream_resp = await stream_client.send(upstream_req, stream=True)
+
+                if upstream_resp.status_code >= 400:
+                    print(f"[HostPlexStream] Upstream Plex returned {upstream_resp.status_code} for {full_stream_url}")
+                    await upstream_resp.aclose()
+                    await stream_client.aclose()
+                    raise HTTPException(status_code=upstream_resp.status_code, detail="Plex Stream nicht erreichbar")
 
                 resp_headers = {
                     "Accept-Ranges": "bytes",
                     "Content-Type": upstream_resp.headers.get("content-type", f"audio/{container}"),
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
                     "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type",
                 }
                 if "content-length" in upstream_resp.headers:
@@ -469,8 +506,10 @@ async def stream_audio(
     raise HTTPException(status_code=404, detail="Audiodatei nicht gefunden.")
 
 @app.options("/api/audio/stream")
+@app.options("/api/audio/stream/{track_id}")
 @app.options("/api/stream")
 @app.options("/api/stream/{track_id}")
+@app.options("/api/plex/stream/{key}")
 async def options_stream():
     return Response(
         status_code=200,
@@ -489,9 +528,18 @@ _host_artist_map_cache: Optional[Dict[str, str]] = None
 @app.get("/api/track/cover")
 @app.get("/api/cover")
 @app.get("/api/cover/{track_id}")
-async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Query(None), id: Optional[str] = Query(None)):
-    query_id = track_id or id
-    clean_id = str(query_id).replace("host://", "").strip() if query_id else ""
+@app.head("/api/track/cover")
+@app.head("/api/cover")
+@app.head("/api/cover/{track_id}")
+async def get_cover_art(
+    track_id: Optional[str] = None,
+    path: Optional[str] = Query(None),
+    id: Optional[str] = Query(None),
+    key: Optional[str] = Query(None),
+    thumb: Optional[str] = Query(None)
+):
+    query_id = track_id or id or key
+    clean_id = urllib.parse.unquote(str(query_id)).replace("host://", "").strip() if query_id else ""
     target_path = None
     track = None
 
@@ -501,7 +549,7 @@ async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Qu
             target_path = track.get("file_path")
 
     if not target_path and path:
-        clean_p = str(path).replace("host://", "").strip()
+        clean_p = urllib.parse.unquote(str(path)).replace("host://", "").strip()
         if os.path.exists(clean_p):
             target_path = clean_p
         else:
@@ -537,6 +585,8 @@ async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Qu
         clean_key = str(path).replace("plex://", "")
     elif clean_id.isdigit():
         clean_key = clean_id
+    elif track and track.get("plex_key"):
+        clean_key = str(track.get("plex_key"))
 
     cache_key = f"plex_track_cover_{clean_key or clean_id}"
     if cache_key in _cover_cache:
@@ -549,68 +599,44 @@ async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Qu
     if disk_file.exists():
         try:
             data = disk_file.read_bytes()
-            if len(data) > 0:
+            if len(data) > 200:
                 _cover_cache[cache_key] = (data, "image/jpeg")
                 return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
         except Exception:
             pass
 
-    thumb_path = None
-    direct_cov_url = None
+    thumb_paths_to_try = []
+    if thumb:
+        thumb_paths_to_try.append(thumb)
     if track:
         if track.get("thumb"):
-            thumb_path = track.get("thumb")
-        if track.get("plex_cover_url") and str(track.get("plex_cover_url")).startswith("http"):
-            direct_cov_url = track.get("plex_cover_url")
-        elif track.get("cover_url") and str(track.get("cover_url")).startswith("http"):
-            direct_cov_url = track.get("cover_url")
+            thumb_paths_to_try.append(track["thumb"])
+        if track.get("parent_thumb"):
+            thumb_paths_to_try.append(track["parent_thumb"])
+        if track.get("grandparent_thumb"):
+            thumb_paths_to_try.append(track["grandparent_thumb"])
+        if track.get("plex_cover_url") and str(track["plex_cover_url"]).startswith("http"):
+            thumb_paths_to_try.append(track["plex_cover_url"])
 
     config = load_host_config()
     if config.plex_url and config.plex_token:
         try:
             client = HostPlexClient(config.plex_url, config.plex_token)
             base_url = await client._get_working_base_url()
-            async with httpx.AsyncClient(timeout=15.0, verify=False) as http_client:
-                # Direct cover URL
-                if direct_cov_url:
-                    token_sep = "&" if "?" in direct_cov_url else "?"
-                    final_cov = direct_cov_url if "X-Plex-Token=" in direct_cov_url else f"{direct_cov_url}{token_sep}X-Plex-Token={config.plex_token}"
-                    r = await http_client.get(final_cov, headers={"X-Plex-Token": config.plex_token})
-                    if r.status_code == 200 and r.content:
-                        c_type = r.headers.get("Content-Type", "image/jpeg")
-                        _cover_cache[cache_key] = (r.content, c_type)
+            if base_url:
+                async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True) as http_client:
+                    # Try direct thumb paths
+                    for tp in thumb_paths_to_try:
+                        if not tp:
+                            continue
+                        sep = "" if str(tp).startswith("/") else "/"
+                        if str(tp).startswith("http"):
+                            final_cov = tp if "X-Plex-Token=" in tp else f"{tp}{'&' if '?' in tp else '?'}X-Plex-Token={config.plex_token}"
+                        else:
+                            final_cov = f"{base_url}{sep}{tp}?X-Plex-Token={config.plex_token}"
                         try:
-                            disk_file.write_bytes(r.content)
-                        except Exception:
-                            pass
-                        return Response(content=r.content, media_type=c_type, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
-
-                # Fetch directly via track thumb path
-                if thumb_path and base_url:
-                    sep = "" if str(thumb_path).startswith("/") else "/"
-                    r = await http_client.get(f"{base_url}{sep}{thumb_path}?X-Plex-Token={config.plex_token}", headers={"X-Plex-Token": config.plex_token})
-                    if r.status_code == 200 and r.content:
-                        c_type = r.headers.get("Content-Type", "image/jpeg")
-                        _cover_cache[cache_key] = (r.content, c_type)
-                        try:
-                            disk_file.write_bytes(r.content)
-                        except Exception:
-                            pass
-                        return Response(content=r.content, media_type=c_type, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
-
-                # Fallback: Query metadata from Plex by ratingKey
-                if clean_key and base_url:
-                    meta_res = await http_client.get(
-                        f"{base_url}/library/metadata/{clean_key}?X-Plex-Token={config.plex_token}",
-                        headers={"X-Plex-Token": config.plex_token, "Accept": "application/json"}
-                    )
-                    if meta_res.status_code == 200:
-                        meta = meta_res.json().get("MediaContainer", {}).get("Metadata", [{}])[0]
-                        thumb = meta.get("thumb") or meta.get("parentThumb") or meta.get("grandparentThumb")
-                        if thumb:
-                            sep = "" if str(thumb).startswith("/") else "/"
-                            r = await http_client.get(f"{base_url}{sep}{thumb}?X-Plex-Token={config.plex_token}", headers={"X-Plex-Token": config.plex_token})
-                            if r.status_code == 200 and r.content:
+                            r = await http_client.get(final_cov, headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
+                            if r.status_code == 200 and r.content and len(r.content) > 200:
                                 c_type = r.headers.get("Content-Type", "image/jpeg")
                                 _cover_cache[cache_key] = (r.content, c_type)
                                 try:
@@ -618,20 +644,67 @@ async def get_cover_art(track_id: Optional[str] = None, path: Optional[str] = Qu
                                 except Exception:
                                     pass
                                 return Response(content=r.content, media_type=c_type, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+                        except Exception:
+                            continue
+
+                    # Fallback: Query metadata from Plex by ratingKey
+                    if clean_key:
+                        try:
+                            meta_res = await http_client.get(
+                                f"{base_url}/library/metadata/{clean_key}?X-Plex-Token={config.plex_token}",
+                                headers=client._get_api_headers()
+                            )
+                            if meta_res.status_code == 200:
+                                meta = meta_res.json().get("MediaContainer", {}).get("Metadata", [{}])[0]
+                                candidate_thumbs = [
+                                    meta.get("thumb"),
+                                    meta.get("parentThumb"),
+                                    meta.get("grandparentThumb")
+                                ]
+                                parent_key = meta.get("parentRatingKey") or (track.get("parent_key") if track else None)
+                                if parent_key:
+                                    try:
+                                        p_res = await http_client.get(
+                                            f"{base_url}/library/metadata/{parent_key}?X-Plex-Token={config.plex_token}",
+                                            headers=client._get_api_headers()
+                                        )
+                                        if p_res.status_code == 200:
+                                            p_meta = p_res.json().get("MediaContainer", {}).get("Metadata", [{}])[0]
+                                            candidate_thumbs.extend([p_meta.get("thumb"), p_meta.get("parentThumb")])
+                                    except Exception:
+                                        pass
+
+                                for cand in candidate_thumbs:
+                                    if cand:
+                                        sep = "" if str(cand).startswith("/") else "/"
+                                        c_url = f"{base_url}{sep}{cand}?X-Plex-Token={config.plex_token}"
+                                        r = await http_client.get(c_url, headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
+                                        if r.status_code == 200 and r.content and len(r.content) > 200:
+                                            c_type = r.headers.get("Content-Type", "image/jpeg")
+                                            _cover_cache[cache_key] = (r.content, c_type)
+                                            try:
+                                                disk_file.write_bytes(r.content)
+                                            except Exception:
+                                                pass
+                                            return Response(content=r.content, media_type=c_type, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+                        except Exception as e:
+                            print(f"[HostCover] Metadata fallback error: {e}")
         except Exception as e:
             print(f"[HostCover] Plex fetch error: {e}")
 
-    # Clean SVG fallback placeholder (200 OK)
+    # Clean SVG fallback placeholder (no-cache so browser fetches newly synced artwork)
     svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#1e1b4b"/><stop offset="100%" stop-color="#0f172a"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)" rx="12"/><path d="M40 30v30a10 10 0 1 1-6-9.2V30l26-6v26a10 10 0 1 1-6-9.2V24l-14 3z" fill="#8b5cf6" opacity="0.8"/></svg>'
-    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml", headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Access-Control-Allow-Origin": "*"})
 
 @app.get("/api/plex/cover/{key}")
+@app.head("/api/plex/cover/{key}")
 async def get_plex_cover_proxy(key: str, thumb: Optional[str] = None):
     """Proxies Plex track or album cover by rating key."""
     clean_key = str(key).replace("plex_", "").strip()
-    return await get_cover_art(track_id=f"plex_{clean_key}")
+    return await get_cover_art(track_id=f"plex_{clean_key}", thumb=thumb)
 
 @app.get("/api/playlist/cover")
+@app.head("/api/playlist/cover")
 async def get_host_playlist_cover(
     key: Optional[str] = None,
     id: Optional[str] = None,
@@ -654,7 +727,7 @@ async def get_host_playlist_cover(
     if disk_file.exists():
         try:
             data = disk_file.read_bytes()
-            if len(data) > 0:
+            if len(data) > 200:
                 _cover_cache[cache_key] = (data, "image/jpeg")
                 return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
         except Exception:
@@ -665,44 +738,45 @@ async def get_host_playlist_cover(
         try:
             client = HostPlexClient(config.plex_url, config.plex_token)
             base = await client._get_working_base_url()
-            async with httpx.AsyncClient(timeout=12.0, verify=False) as http_client:
-                # 1. Fetch composite or thumb directly if provided
-                if target_path:
-                    sep = "" if target_path.startswith("/") else "/"
-                    url_to_fetch = target_path if target_path.startswith("http") else f"{base}{sep}{target_path}"
-                    token_sep = "&" if "?" in url_to_fetch else "?"
-                    final_url = url_to_fetch if "X-Plex-Token=" in url_to_fetch else f"{url_to_fetch}{token_sep}X-Plex-Token={config.plex_token}"
-                    r = await http_client.get(final_url, headers={"X-Plex-Token": config.plex_token})
-                    if r.status_code == 200 and r.content:
-                        mime = r.headers.get("Content-Type", "image/jpeg")
-                        _cover_cache[cache_key] = (r.content, mime)
-                        try:
-                            disk_file.write_bytes(r.content)
-                        except Exception:
-                            pass
-                        return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+            if base:
+                async with httpx.AsyncClient(timeout=15.0, verify=False, follow_redirects=True) as http_client:
+                    # 1. Fetch composite or thumb directly if provided
+                    if target_path:
+                        sep = "" if target_path.startswith("/") else "/"
+                        url_to_fetch = target_path if target_path.startswith("http") else f"{base}{sep}{target_path}"
+                        token_sep = "&" if "?" in url_to_fetch else "?"
+                        final_url = url_to_fetch if "X-Plex-Token=" in url_to_fetch else f"{url_to_fetch}{token_sep}X-Plex-Token={config.plex_token}"
+                        r = await http_client.get(final_url, headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
+                        if r.status_code == 200 and r.content and len(r.content) > 200:
+                            mime = r.headers.get("Content-Type", "image/jpeg")
+                            _cover_cache[cache_key] = (r.content, mime)
+                            try:
+                                disk_file.write_bytes(r.content)
+                            except Exception:
+                                pass
+                            return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
 
-                # 2. Query first track of this playlist from Plex to use its artwork
-                if rating_key:
-                    items_res = await http_client.get(
-                        f"{base}/playlists/{rating_key}/items?X-Plex-Container-Start=0&X-Plex-Container-Size=1&X-Plex-Token={config.plex_token}",
-                        headers={"X-Plex-Token": config.plex_token, "Accept": "application/json"}
-                    )
-                    if items_res.status_code == 200:
-                        items = items_res.json().get("MediaContainer", {}).get("Metadata", [])
-                        if items:
-                            first_thumb = items[0].get("thumb") or items[0].get("parentThumb") or items[0].get("grandparentThumb")
-                            if first_thumb:
-                                sep = "" if first_thumb.startswith("/") else "/"
-                                r = await http_client.get(f"{base}{sep}{first_thumb}?X-Plex-Token={config.plex_token}", headers={"X-Plex-Token": config.plex_token})
-                                if r.status_code == 200 and r.content:
-                                    mime = r.headers.get("Content-Type", "image/jpeg")
-                                    _cover_cache[cache_key] = (r.content, mime)
-                                    try:
-                                        disk_file.write_bytes(r.content)
-                                    except Exception:
-                                        pass
-                                    return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+                    # 2. Query first track of this playlist from Plex to use its artwork
+                    if rating_key:
+                        items_res = await http_client.get(
+                            f"{base}/playlists/{rating_key}/items?X-Plex-Container-Start=0&X-Plex-Container-Size=1&X-Plex-Token={config.plex_token}",
+                            headers=client._get_api_headers()
+                        )
+                        if items_res.status_code == 200:
+                            items = items_res.json().get("MediaContainer", {}).get("Metadata", [])
+                            if items:
+                                first_thumb = items[0].get("thumb") or items[0].get("parentThumb") or items[0].get("grandparentThumb")
+                                if first_thumb:
+                                    sep = "" if first_thumb.startswith("/") else "/"
+                                    r = await http_client.get(f"{base}{sep}{first_thumb}?X-Plex-Token={config.plex_token}", headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
+                                    if r.status_code == 200 and r.content and len(r.content) > 200:
+                                        mime = r.headers.get("Content-Type", "image/jpeg")
+                                        _cover_cache[cache_key] = (r.content, mime)
+                                        try:
+                                            disk_file.write_bytes(r.content)
+                                        except Exception:
+                                            pass
+                                        return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
         except Exception as e:
             print(f"[HostPlaylistCover] Error: {e}")
 
@@ -713,11 +787,12 @@ async def get_host_playlist_cover(
         first_tid = pl["track_ids"][0]
         return await get_cover_art(id=str(first_tid))
 
-    # 4. Vibrant SVG gradient placeholder (200 OK)
+    # 4. Vibrant SVG gradient placeholder (no-cache)
     svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#ec4899"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)" rx="14"/><text x="50" y="58" font-family="system-ui, -apple-system, sans-serif" font-size="44" font-weight="900" fill="white" text-anchor="middle" dominant-baseline="middle">♪</text></svg>'
-    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml", headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Access-Control-Allow-Origin": "*"})
 
 @app.get("/api/artist/image")
+@app.head("/api/artist/image")
 async def get_host_artist_image(name: str = Query(...)):
     """Returns artist avatar image from Plex, library tracks, or cache."""
     clean_name = name.strip().lower()
@@ -746,13 +821,14 @@ async def get_host_artist_image(name: str = Query(...)):
 
             if thumb_path:
                 base = await client._get_working_base_url()
-                async with httpx.AsyncClient(timeout=10.0, verify=False) as http_client:
-                    sep = "" if str(thumb_path).startswith("/") else "/"
-                    r = await http_client.get(f"{base}{sep}{thumb_path}?X-Plex-Token={config.plex_token}", headers={"X-Plex-Token": config.plex_token})
-                    if r.status_code == 200 and r.content:
-                        mime = r.headers.get("Content-Type", "image/jpeg")
-                        _cover_cache[cache_key] = (r.content, mime)
-                        return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+                if base:
+                    async with httpx.AsyncClient(timeout=12.0, verify=False, follow_redirects=True) as http_client:
+                        sep = "" if str(thumb_path).startswith("/") else "/"
+                        r = await http_client.get(f"{base}{sep}{thumb_path}?X-Plex-Token={config.plex_token}", headers={"X-Plex-Token": config.plex_token, "Accept": "image/*,*/*"})
+                        if r.status_code == 200 and r.content and len(r.content) > 200:
+                            mime = r.headers.get("Content-Type", "image/jpeg")
+                            _cover_cache[cache_key] = (r.content, mime)
+                            return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
         except Exception as e:
             print(f"[HostArtistImage] Plex error: {e}")
 
@@ -770,6 +846,7 @@ async def get_host_artist_image(name: str = Query(...)):
     raise HTTPException(status_code=404, detail="Kein Künstlerbild gefunden.")
 
 @app.get("/api/plex/stream/{key}")
+@app.head("/api/plex/stream/{key}")
 async def stream_plex_proxy_key(key: str, request: Request):
     """Streams a Plex track by rating key through the Host."""
     clean_key = str(key).replace("plex_", "").strip()

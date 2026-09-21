@@ -26,10 +26,25 @@ class HostPlexClient:
     def is_configured(self) -> bool:
         return bool(self.base_url and self.token)
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_api_headers(self) -> Dict[str, str]:
         return {
             "X-Plex-Token": self.token,
             "Accept": "application/json",
+            "X-Plex-Product": "Tonarr Host",
+            "X-Plex-Version": "1.0.0",
+            "X-Plex-Client-Identifier": "Tonarr-Host",
+            "X-Plex-Platform": "Linux",
+            "X-Plex-Platform-Version": "Docker",
+            "X-Plex-Device": "Server",
+            "X-Plex-Device-Name": "Tonarr Host",
+            "X-Plex-Model": "HostEdition",
+            "User-Agent": "Tonarr-Host/1.0.0"
+        }
+
+    def _get_headers(self) -> Dict[str, str]:
+        return {
+            "X-Plex-Token": self.token,
+            "Accept": "*/*",
             "X-Plex-Product": "Tonarr Host",
             "X-Plex-Version": "1.0.0",
             "X-Plex-Client-Identifier": "Tonarr-Host",
@@ -203,7 +218,7 @@ class HostPlexClient:
                     target_sections = [{"key": "all"}]
 
             seen_rating_keys = set()
-            async with httpx.AsyncClient(timeout=40.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=40.0, verify=False, follow_redirects=True) as client:
                 for sec in target_sections:
                     sec_key = sec.get("key")
                     if not sec_key:
@@ -216,7 +231,7 @@ class HostPlexClient:
                     ]
                     for qurl in query_urls:
                         try:
-                            res = await client.get(qurl, headers=self._get_headers())
+                            res = await client.get(qurl, headers=self._get_api_headers())
                             if res.status_code == 200:
                                 items = res.json().get("MediaContainer", {}).get("Metadata", [])
                                 if items:
@@ -259,6 +274,11 @@ class HostPlexClient:
                             quality_str = f"{codec_upper} {bitrate} kbps" if bitrate else codec_upper
 
                         thumb = item.get("thumb") or item.get("parentThumb") or item.get("grandparentThumb") or ""
+                        parent_thumb = item.get("parentThumb") or ""
+                        grandparent_thumb = item.get("grandparentThumb") or ""
+                        parent_key = str(item.get("parentRatingKey", "")).strip() or None
+                        grandparent_key = str(item.get("grandparentRatingKey", "")).strip() or None
+
                         dur_ms = item.get("duration") or 0
                         dur_sec = dur_ms / 1000.0
                         mins = int(dur_sec // 60)
@@ -269,6 +289,8 @@ class HostPlexClient:
                             "id": f"plex_{rating_key}",
                             "host_id": f"plex_{rating_key}",
                             "plex_key": rating_key,
+                            "parent_key": parent_key,
+                            "grandparent_key": grandparent_key,
                             "file_path": f"plex://{rating_key}",
                             "server_file_path": part_file,
                             "file_name": f"{item.get('title', 'track')}.{container}",
@@ -283,6 +305,8 @@ class HostPlexClient:
                             "stream_url": f"/api/plex/stream/{rating_key}",
                             "cover_url": f"/api/cover?id=plex_{rating_key}",
                             "thumb": thumb,
+                            "parent_thumb": parent_thumb,
+                            "grandparent_thumb": grandparent_thumb,
                             "part_key": part_key,
                             "plex_cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
                             "plex_stream_url": f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else "",
@@ -307,15 +331,15 @@ class HostPlexClient:
             return []
         try:
             url = await self._get_working_base_url()
-            async with httpx.AsyncClient(timeout=12.0, verify=False) as client:
-                res = await client.get(f"{url}/playlists?playlistType=audio", headers=self._get_headers())
+            async with httpx.AsyncClient(timeout=12.0, verify=False, follow_redirects=True) as client:
+                res = await client.get(f"{url}/playlists?playlistType=audio", headers=self._get_api_headers())
                 metadata = []
                 if res.status_code == 200:
                     metadata = res.json().get("MediaContainer", {}).get("Metadata", [])
                 
                 # Fallback: Query all playlists if audio query yielded nothing
                 if not metadata:
-                    res_all = await client.get(f"{url}/playlists", headers=self._get_headers())
+                    res_all = await client.get(f"{url}/playlists", headers=self._get_api_headers())
                     if res_all.status_code == 200:
                         all_meta = res_all.json().get("MediaContainer", {}).get("Metadata", [])
                         metadata = [
@@ -356,8 +380,8 @@ class HostPlexClient:
         clean_key = str(rating_key).replace("plex_", "").replace("plex://", "").strip()
         try:
             base_url = await self._get_working_base_url()
-            async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
-                res = await client.get(f"{base_url}/playlists/{clean_key}/items?X-Plex-Token={self.token}", headers=self._get_headers())
+            async with httpx.AsyncClient(timeout=20.0, verify=False, follow_redirects=True) as client:
+                res = await client.get(f"{base_url}/playlists/{clean_key}/items?X-Plex-Token={self.token}", headers=self._get_api_headers())
                 if res.status_code == 200:
                     items = res.json().get("MediaContainer", {}).get("Metadata", [])
                     tracks = []
@@ -393,6 +417,11 @@ class HostPlexClient:
                             quality_str = f"{codec_upper} {bitrate} kbps" if bitrate else codec_upper
 
                         thumb = item.get("thumb") or item.get("parentThumb") or item.get("grandparentThumb") or ""
+                        parent_thumb = item.get("parentThumb") or ""
+                        grandparent_thumb = item.get("grandparentThumb") or ""
+                        parent_key = str(item.get("parentRatingKey", "")).strip() or None
+                        grandparent_key = str(item.get("grandparentRatingKey", "")).strip() or None
+
                         dur_ms = item.get("duration") or 0
                         dur_sec = dur_ms / 1000.0
                         mins = int(dur_sec // 60)
@@ -405,6 +434,8 @@ class HostPlexClient:
                             "id": f"plex_{r_key}",
                             "host_id": f"plex_{r_key}",
                             "plex_key": r_key,
+                            "parent_key": parent_key,
+                            "grandparent_key": grandparent_key,
                             "order": idx + 1,
                             "file_path": f"plex://{r_key}",
                             "server_file_path": part_file,
@@ -425,6 +456,8 @@ class HostPlexClient:
                             "quality_str": quality_str,
                             "is_lossless": is_lossless,
                             "thumb": thumb,
+                            "parent_thumb": parent_thumb,
+                            "grandparent_thumb": grandparent_thumb,
                             "part_key": part_key,
                             "plex_cover_url": plex_cover_url,
                             "plex_stream_url": plex_stream_url,
