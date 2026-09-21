@@ -58,11 +58,34 @@ class MultiSourceMetadataEngine:
             if audio is None:
                 return result
 
-            # Duration & Bitrate
+            # Duration & Bitrate & Audio Quality
             if hasattr(audio, "info") and audio.info:
                 result["duration"] = round(getattr(audio.info, "length", 0.0), 2)
                 if hasattr(audio.info, "bitrate") and audio.info.bitrate:
                     result["bitrate"] = int(audio.info.bitrate // 1000)
+                result["sample_rate"] = getattr(audio.info, "sample_rate", None)
+                result["bit_depth"] = getattr(audio.info, "bits_per_sample", None)
+                result["channels"] = getattr(audio.info, "channels", 2)
+
+            ext_clean = file_path.suffix.replace(".", "").lower()
+            is_lossless = ext_clean in ("flac", "wav", "alac", "aiff", "dsd")
+            s_rate = result.get("sample_rate")
+            b_depth = result.get("bit_depth")
+            is_hi_res = is_lossless and ((b_depth and int(b_depth) > 16) or (s_rate and int(s_rate) > 48000))
+            codec_upper = ext_clean.upper()
+            if is_lossless:
+                parts = [codec_upper]
+                if b_depth: parts.append(f"{b_depth}-Bit")
+                if s_rate: parts.append(f"{round(int(s_rate)/1000.0, 1)} kHz")
+                q_str = " ".join(parts) if len(parts) > 1 else f"{codec_upper} Lossless"
+            else:
+                br = result.get("bitrate")
+                q_str = f"{codec_upper} {br} kbps" if br else codec_upper
+
+            result["codec"] = codec_upper
+            result["quality_str"] = q_str
+            result["is_lossless"] = is_lossless
+            result["is_hi_res"] = is_hi_res
 
             # MP3 / ID3
             if isinstance(audio, MP3) or (hasattr(audio, "tags") and isinstance(audio.tags, ID3)):
@@ -350,7 +373,14 @@ class MultiSourceMetadataEngine:
             "track_number": info["track_number"],
             "duration": info["duration"],
             "duration_str": f"{int(info['duration'] // 60):02d}:{int(info['duration'] % 60):02d}",
-            "bitrate": info["bitrate"],
+            "bitrate": info.get("bitrate"),
+            "sample_rate": info.get("sample_rate"),
+            "bit_depth": info.get("bit_depth"),
+            "channels": info.get("channels", 2),
+            "codec": info.get("codec"),
+            "quality_str": info.get("quality_str"),
+            "is_lossless": info.get("is_lossless", False),
+            "is_hi_res": info.get("is_hi_res", False),
             "extension": ext,
             "has_lyrics": False,
             "is_synced": False,

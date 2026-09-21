@@ -813,16 +813,67 @@ async def get_plex_playlists_endpoint():
 async def get_plex_playlist_tracks_endpoint(key: str):
     config = load_host_config()
     client = HostPlexClient(config.plex_url, config.plex_token)
-    return await client.get_playlist_tracks(key)
+    tracks = await client.get_playlist_tracks(key)
+    if tracks:
+        known_ids = {t.get("id") for t in library_cache.tracks if t.get("id")}
+        to_add = [t for t in tracks if t.get("id") not in known_ids]
+        if to_add:
+            library_cache.tracks.extend(to_add)
+            library_cache.save()
+            library_cache._rebuild_map()
+    return tracks
 
 @app.post("/api/plex/playlists/sync-all")
+@app.post("/api/plex/playlists/sync")
 async def sync_all_plex_playlists_endpoint():
-    res = await sync_plex_endpoint()
+    config = load_host_config()
+    if not config.plex_url or not config.plex_token:
+        return {
+            "success": False,
+            "count": 0,
+            "playlists": load_host_playlists(),
+            "message": "Plex Server ist auf dem Host nicht konfiguriert."
+        }
+
+    client = HostPlexClient(config.plex_url, config.plex_token)
+    plex_pls = await client.get_playlists()
+    synced_pls = []
+    new_tracks_all = []
+    known_ids = {t.get("id") for t in library_cache.tracks if t.get("id")}
+
+    for pl in plex_pls:
+        pl_key = pl.get("plex_key") or pl.get("id")
+        if pl_key:
+            pl_tracks = await client.get_playlist_tracks(str(pl_key))
+            track_ids = []
+            for pt in pl_tracks:
+                tid = pt.get("id") or f"plex_{pt.get('plex_key')}"
+                track_ids.append(tid)
+                if tid not in known_ids:
+                    known_ids.add(tid)
+                    new_tracks_all.append(pt)
+
+            synced_pls.append({
+                "id": pl.get("id") or f"plex_{pl_key}",
+                "name": pl.get("name"),
+                "source": "plex",
+                "track_count": len(track_ids),
+                "track_ids": track_ids,
+                "cover_url": pl.get("cover_url")
+            })
+
+    if new_tracks_all:
+        library_cache.tracks.extend(new_tracks_all)
+        library_cache.save()
+        library_cache._rebuild_map()
+
+    save_host_playlists(synced_pls)
     return {
         "success": True,
-        "count": res.get("playlist_count", 0),
-        "playlists": res.get("playlists", []),
-        "new_tracks": res.get("tracks", [])
+        "count": len(synced_pls),
+        "playlists": synced_pls,
+        "new_tracks": new_tracks_all,
+        "message": f"{len(synced_pls)} Plex Playlists synchronisiert."
     }
 
 # --- Universal Host Playlists API ---

@@ -238,12 +238,32 @@ class HostPlexClient:
                         seen_rating_keys.add(rating_key)
                             
                         media_list = item.get("Media", [])
-                        part = media_list[0].get("Part", [{}])[0] if media_list else {}
+                        media_obj = media_list[0] if media_list else {}
+                        part = media_obj.get("Part", [{}])[0] if media_list else {}
                         part_key = part.get("key", "")
                         part_file = part.get("file", "")
-                        container = media_list[0].get("container", "mp3") if media_list else "mp3"
-                        bitrate = media_list[0].get("bitrate", 320) if media_list else 320
-                        
+                        container = (media_obj.get("container") or "mp3").lower()
+                        audio_codec = (media_obj.get("audioCodec") or container).lower()
+                        bitrate = media_obj.get("bitrate", 320)
+                        sample_rate = media_obj.get("samplingRate")
+                        bit_depth = media_obj.get("audioBitDepth")
+                        channels = media_obj.get("audioChannels")
+
+                        is_lossless = audio_codec in ("flac", "alac", "wav", "aiff", "dsd") or container in ("flac", "alac", "wav", "aiff")
+                        is_hi_res = is_lossless and ((bit_depth and int(bit_depth) > 16) or (sample_rate and int(sample_rate) > 48000))
+
+                        codec_upper = audio_codec.upper()
+                        if is_lossless:
+                            parts = [codec_upper]
+                            if bit_depth:
+                                parts.append(f"{bit_depth}-Bit")
+                            if sample_rate:
+                                khz = round(int(sample_rate) / 1000.0, 1)
+                                parts.append(f"{khz} kHz")
+                            quality_str = " ".join(parts) if len(parts) > 1 else f"{codec_upper} Lossless"
+                        else:
+                            quality_str = f"{codec_upper} {bitrate} kbps" if bitrate else codec_upper
+
                         thumb = item.get("thumb") or item.get("parentThumb") or item.get("grandparentThumb") or ""
                         dur_ms = item.get("duration") or 0
                         dur_sec = dur_ms / 1000.0
@@ -253,6 +273,7 @@ class HostPlexClient:
 
                         tracks.append({
                             "id": f"plex_{rating_key}",
+                            "host_id": f"plex_{rating_key}",
                             "plex_key": rating_key,
                             "file_path": f"plex://{rating_key}",
                             "server_file_path": part_file,
@@ -269,7 +290,14 @@ class HostPlexClient:
                             "stream_url": f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else "",
                             "cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
                             "extension": f".{container}",
+                            "codec": codec_upper,
                             "bitrate": bitrate,
+                            "sample_rate": sample_rate,
+                            "bit_depth": bit_depth,
+                            "channels": channels,
+                            "quality_str": quality_str,
+                            "is_lossless": is_lossless,
+                            "is_hi_res": is_hi_res,
                             "source": "plex"
                         })
         except Exception as e:
@@ -282,35 +310,50 @@ class HostPlexClient:
             return []
         try:
             url = await self._get_working_base_url()
-            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=12.0, verify=False) as client:
                 res = await client.get(f"{url}/playlists?playlistType=audio", headers=self._get_headers())
+                metadata = []
                 if res.status_code == 200:
                     metadata = res.json().get("MediaContainer", {}).get("Metadata", [])
-                    result = []
-                    for p in metadata:
-                        r_key = str(p.get("ratingKey", "")).strip()
-                        thumb_val = p.get("thumb") or ""
-                        comp_val = p.get("composite") or ""
-                        thumb_key = thumb_val or comp_val
-                        cover_url = f"{url}{thumb_key}?X-Plex-Token={self.token}" if thumb_key else ""
-                        result.append({
-                            "id": f"plex_{r_key}",
-                            "plex_key": r_key,
-                            "name": p.get("title", "Plex Playlist"),
-                            "track_count": p.get("leafCount", 0),
-                            "duration": (p.get("duration") or 0) / 1000.0,
-                            "composite": comp_val,
-                            "thumb": thumb_val,
-                            "cover_url": cover_url,
-                            "source": "plex"
-                        })
-                    return result
+                
+                # Fallback: Query all playlists if audio query yielded nothing
+                if not metadata:
+                    res_all = await client.get(f"{url}/playlists", headers=self._get_headers())
+                    if res_all.status_code == 200:
+                        all_meta = res_all.json().get("MediaContainer", {}).get("Metadata", [])
+                        metadata = [
+                            p for p in all_meta 
+                            if p.get("playlistType") == "audio" or str(p.get("type", "")).lower() in ("audio", "playlist", "track")
+                        ]
+                
+                result = []
+                for p in metadata:
+                    r_key = str(p.get("ratingKey", "")).strip()
+                    if not r_key:
+                        continue
+                    thumb_val = p.get("thumb") or ""
+                    comp_val = p.get("composite") or ""
+                    thumb_key = thumb_val or comp_val
+                    cover_url = f"{url}{thumb_key}?X-Plex-Token={self.token}" if thumb_key else ""
+                    result.append({
+                        "id": f"plex_{r_key}",
+                        "host_id": f"plex_{r_key}",
+                        "plex_key": r_key,
+                        "name": p.get("title", "Plex Playlist"),
+                        "track_count": p.get("leafCount", 0),
+                        "duration": (p.get("duration") or 0) / 1000.0,
+                        "composite": comp_val,
+                        "thumb": thumb_val,
+                        "cover_url": cover_url,
+                        "source": "plex"
+                    })
+                return result
         except Exception as e:
             print(f"[HostPlexClient] Error getting playlists: {e}")
         return []
 
     async def get_playlist_tracks(self, rating_key: str) -> List[Dict[str, Any]]:
-        """Retrieves sequential tracks of a specific Plex playlist."""
+        """Retrieves sequential tracks of a specific Plex playlist with rich audio quality."""
         if not self.is_configured() or not rating_key:
             return []
         clean_key = str(rating_key).replace("plex_", "").replace("plex://", "").strip()
@@ -326,10 +369,32 @@ class HostPlexClient:
                         if not r_key:
                             continue
                         media_list = item.get("Media", [])
-                        part = media_list[0].get("Part", [{}])[0] if media_list else {}
+                        media_obj = media_list[0] if media_list else {}
+                        part = media_obj.get("Part", [{}])[0] if media_list else {}
                         part_key = part.get("key", "")
-                        container = media_list[0].get("container", "mp3") if media_list else "mp3"
-                        bitrate = media_list[0].get("bitrate", 320) if media_list else 320
+                        part_file = part.get("file", "")
+                        container = (media_obj.get("container") or "mp3").lower()
+                        audio_codec = (media_obj.get("audioCodec") or container).lower()
+                        bitrate = media_obj.get("bitrate", 320)
+                        sample_rate = media_obj.get("samplingRate")
+                        bit_depth = media_obj.get("audioBitDepth")
+                        channels = media_obj.get("audioChannels")
+
+                        is_lossless = audio_codec in ("flac", "alac", "wav", "aiff", "dsd") or container in ("flac", "alac", "wav", "aiff")
+                        is_hi_res = is_lossless and ((bit_depth and int(bit_depth) > 16) or (sample_rate and int(sample_rate) > 48000))
+
+                        codec_upper = audio_codec.upper()
+                        if is_lossless:
+                            parts = [codec_upper]
+                            if bit_depth:
+                                parts.append(f"{bit_depth}-Bit")
+                            if sample_rate:
+                                khz = round(int(sample_rate) / 1000.0, 1)
+                                parts.append(f"{khz} kHz")
+                            quality_str = " ".join(parts) if len(parts) > 1 else f"{codec_upper} Lossless"
+                        else:
+                            quality_str = f"{codec_upper} {bitrate} kbps" if bitrate else codec_upper
+
                         thumb = item.get("thumb") or item.get("parentThumb") or item.get("grandparentThumb") or ""
                         dur_ms = item.get("duration") or 0
                         dur_sec = dur_ms / 1000.0
@@ -341,9 +406,11 @@ class HostPlexClient:
 
                         tracks.append({
                             "id": f"plex_{r_key}",
+                            "host_id": f"plex_{r_key}",
                             "plex_key": r_key,
                             "order": idx + 1,
                             "file_path": f"plex://{r_key}",
+                            "server_file_path": part_file,
                             "file_name": f"{item.get('title', 'track')}.{container}",
                             "title": item.get("title", "Unbekannter Titel"),
                             "artist": item.get("grandparentTitle") or item.get("originalTitle") or "Unbekannter Interpret",
@@ -353,7 +420,14 @@ class HostPlexClient:
                             "stream_url": stream_url,
                             "cover_url": cover_url,
                             "extension": f".{container}",
+                            "codec": codec_upper,
                             "bitrate": bitrate,
+                            "sample_rate": sample_rate,
+                            "bit_depth": bit_depth,
+                            "channels": channels,
+                            "quality_str": quality_str,
+                            "is_lossless": is_lossless,
+                            "is_hi_res": is_hi_res,
                             "source": "plex"
                         })
                     return tracks
