@@ -674,7 +674,8 @@ if (elements.btnSaveManualHostPlex) {
   });
 }
 
-function openCenteredPlexPopup(url = 'about:blank') {
+function openCenteredPlexPopup(url) {
+  if (!url) return null;
   const width = 600;
   const height = 700;
   const left = window.screenLeft !== undefined
@@ -684,19 +685,21 @@ function openCenteredPlexPopup(url = 'about:blank') {
     ? window.screenTop + Math.max(0, (window.outerHeight - height) / 2)
     : (window.screen.height - height) / 2;
 
-  return window.open(
+  const popup = window.open(
     url,
     'PlexOAuthWindow',
     `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=no,resizable=yes,menubar=no,toolbar=no,location=yes`
   );
+  if (popup) {
+    try { popup.focus(); } catch (e) {}
+  }
+  return popup;
 }
 
 // 1-Click OAuth PIN (Official Centered Popup Window)
 if (elements.btnHostPlexOAuth) {
   elements.btnHostPlexOAuth.addEventListener('click', async () => {
-    // Open centered popup window immediately on click gesture to prevent browser popup blockers
-    const popup = openCenteredPlexPopup();
-
+    let popup = null;
     elements.btnHostPlexOAuth.disabled = true;
     elements.btnHostPlexOAuth.textContent = '⏳ PIN wird erstellt...';
 
@@ -713,11 +716,8 @@ if (elements.btnHostPlexOAuth) {
         const pinId = pinData.pin_id;
         const code = pinData.code;
 
-        if (popup && !popup.closed) {
-          popup.location.href = authUrl;
-          try { popup.focus(); } catch (e) {}
-        } else {
-          window.open(authUrl, '_blank');
+        if (authUrl) {
+          popup = openCenteredPlexPopup(authUrl);
         }
 
         if (elements.hostPlexStatusMsg) {
