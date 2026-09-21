@@ -102,12 +102,36 @@ async def get_configuration():
     return load_host_config()
 
 @app.post("/api/config")
-async def update_configuration(config: HostConfig):
-    val = bool(config.plex_as_only_player_source or config.folder_source_for_creator_and_manager_only)
-    config.plex_as_only_player_source = val
-    config.folder_source_for_creator_and_manager_only = val
-    save_host_config(config)
-    return {"success": True, "config": config}
+async def update_configuration(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    current = load_host_config()
+    curr_dict = current.model_dump()
+
+    # Update provided fields safely
+    for k, v in body.items():
+        if k in ("plex_url", "plex_token"):
+            # Never overwrite valid existing Plex credentials with empty strings from clients
+            if v and str(v).strip():
+                curr_dict[k] = str(v).strip()
+                curr_dict["plex_enabled"] = True
+        elif k == "plex_enabled":
+            # Only disable if plex_url is also empty or during explicit logout
+            if v or not curr_dict.get("plex_url"):
+                curr_dict[k] = bool(v)
+        elif k in curr_dict:
+            curr_dict[k] = v
+
+    val = bool(curr_dict.get("plex_as_only_player_source") or curr_dict.get("folder_source_for_creator_and_manager_only"))
+    curr_dict["plex_as_only_player_source"] = val
+    curr_dict["folder_source_for_creator_and_manager_only"] = val
+
+    updated_config = HostConfig(**curr_dict)
+    save_host_config(updated_config)
+    return {"success": True, "config": updated_config}
 
 # --- Directory Browser (Helper for Web UI Folder Selection) ---
 class BrowseFolderRequest(BaseModel):
