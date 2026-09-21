@@ -51,13 +51,39 @@ class HostLibraryCache:
         for t in self.tracks:
             tid = t.get("id")
             if tid:
-                self._track_map[tid] = t
+                s_tid = str(tid)
+                self._track_map[s_tid] = t
+                self._track_map[f"host://{s_tid}"] = t
+                if s_tid.startswith("plex_"):
+                    r_key = s_tid.replace("plex_", "")
+                    self._track_map[r_key] = t
+                    self._track_map[f"plex://{r_key}"] = t
+                    self._track_map[f"host://plex_{r_key}"] = t
             fpath = t.get("file_path")
             if fpath:
-                self._track_map[fpath] = t
+                s_path = str(fpath)
+                self._track_map[s_path] = t
+                if not s_path.startswith("host://"):
+                    self._track_map[f"host://{s_path}"] = t
+            pkey = t.get("plex_key")
+            if pkey:
+                s_pkey = str(pkey)
+                self._track_map[s_pkey] = t
+                self._track_map[f"plex_{s_pkey}"] = t
+                self._track_map[f"plex://{s_pkey}"] = t
+                self._track_map[f"host://plex_{s_pkey}"] = t
 
     def get_track(self, track_id_or_path: str) -> Optional[Dict[str, Any]]:
-        return self._track_map.get(track_id_or_path)
+        if not track_id_or_path:
+            return None
+        clean = str(track_id_or_path).strip()
+        return (
+            self._track_map.get(clean) or
+            self._track_map.get(clean.replace("host://", "")) or
+            self._track_map.get(clean.replace("plex_", "")) or
+            self._track_map.get(f"plex_{clean}") or
+            self._track_map.get(clean.replace("plex://", ""))
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         total = len(self.tracks)

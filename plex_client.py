@@ -289,6 +289,8 @@ class HostPlexClient:
                             "duration_str": dur_str,
                             "stream_url": f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else "",
                             "cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
+                            "thumb": thumb,
+                            "plex_cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
                             "extension": f".{container}",
                             "codec": codec_upper,
                             "bitrate": bitrate,
@@ -427,6 +429,8 @@ class HostPlexClient:
                             "channels": channels,
                             "quality_str": quality_str,
                             "is_lossless": is_lossless,
+                            "thumb": thumb,
+                            "plex_cover_url": cover_url,
                             "is_hi_res": is_hi_res,
                             "source": "plex"
                         })
@@ -434,6 +438,31 @@ class HostPlexClient:
         except Exception as e:
             print(f"[HostPlexClient] Error getting playlist tracks: {e}")
         return []
+
+    async def get_artist_thumbs(self) -> Dict[str, str]:
+        """Fetches a mapping of artist_name -> thumb path from Plex."""
+        if not self.is_configured():
+            return {}
+        artist_map = {}
+        try:
+            base_url = await self._get_working_base_url()
+            sections = await self.get_music_sections()
+            async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+                for sec in sections:
+                    sec_key = sec.get("key")
+                    if not sec_key:
+                        continue
+                    res = await client.get(f"{base_url}/library/sections/{sec_key}/all?type=8", headers=self._get_headers())
+                    if res.status_code == 200:
+                        artists = res.json().get("MediaContainer", {}).get("Metadata", [])
+                        for a in artists:
+                            title = a.get("title", "").strip().lower()
+                            thumb = a.get("thumb")
+                            if title and thumb:
+                                artist_map[title] = thumb
+        except Exception as e:
+            print(f"[HostPlexClient] Error getting artist thumbs: {e}")
+        return artist_map
 
     async def get_track_lyrics(self, rating_key: str) -> Optional[str]:
         """Fetches synchronized LRC or text lyrics from Plex for a track."""
