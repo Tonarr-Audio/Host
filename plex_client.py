@@ -46,26 +46,20 @@ class HostPlexClient:
         if not self.base_url and not self.token:
             return ""
 
+        # Return validated cached URL immediately without redundant network pings
+        if "current" in _GLOBAL_EFFECTIVE_URL and _GLOBAL_EFFECTIVE_URL["current"]:
+            return _GLOBAL_EFFECTIVE_URL["current"]
+        if self._effective_url:
+            return self._effective_url
+
         if self.base_url:
             try:
-                async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
+                async with httpx.AsyncClient(timeout=2.5, verify=False) as client:
                     res = await client.get(f"{self.base_url}/identity", headers=self._get_headers())
                     if res.status_code == 200:
                         _GLOBAL_EFFECTIVE_URL["current"] = self.base_url
                         self._effective_url = self.base_url
                         return self.base_url
-            except Exception:
-                pass
-
-        if "current" in _GLOBAL_EFFECTIVE_URL:
-            cached = _GLOBAL_EFFECTIVE_URL["current"]
-            try:
-                async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
-                    res = await client.get(f"{cached}/identity", headers=self._get_headers())
-                    if res.status_code == 200:
-                        self.base_url = cached
-                        self._effective_url = cached
-                        return cached
             except Exception:
                 pass
 
@@ -286,9 +280,10 @@ class HostPlexClient:
                             "disc_number": item.get("parentIndex", 1),
                             "genre": item.get("Genre", [{}])[0].get("tag") if item.get("Genre") else None,
                             "duration": dur_sec,
-                            "stream_url": f"/api/plex/stream/{r_key}",
-                            "cover_url": f"/api/cover?id=plex_{r_key}",
+                            "stream_url": f"/api/plex/stream/{rating_key}",
+                            "cover_url": f"/api/cover?id=plex_{rating_key}",
                             "thumb": thumb,
+                            "part_key": part_key,
                             "plex_cover_url": f"{base_url}{thumb}?X-Plex-Token={self.token}" if thumb else "",
                             "plex_stream_url": f"{base_url}{part_key}?X-Plex-Token={self.token}" if part_key else "",
                             "extension": f".{container}",
@@ -361,8 +356,8 @@ class HostPlexClient:
         clean_key = str(rating_key).replace("plex_", "").replace("plex://", "").strip()
         try:
             base_url = await self._get_working_base_url()
-            async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
-                res = await client.get(f"{base_url}/playlists/{clean_key}/items", headers=self._get_headers())
+            async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
+                res = await client.get(f"{base_url}/playlists/{clean_key}/items?X-Plex-Token={self.token}", headers=self._get_headers())
                 if res.status_code == 200:
                     items = res.json().get("MediaContainer", {}).get("Metadata", [])
                     tracks = []
@@ -430,6 +425,7 @@ class HostPlexClient:
                             "quality_str": quality_str,
                             "is_lossless": is_lossless,
                             "thumb": thumb,
+                            "part_key": part_key,
                             "plex_cover_url": plex_cover_url,
                             "plex_stream_url": plex_stream_url,
                             "is_hi_res": is_hi_res,
